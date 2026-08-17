@@ -110,7 +110,7 @@ __global__ void window_merge_and_roll_forward_cuda_kernel(
     for (int i = index; i < C; i += blockDim.x) {
         offset = ((blockIdx.z * gridDim.y + blockIdx.y) * gridDim.x + blockIdx.x) * C + i; // C = blocksize
         int input_offset = 
-            (blockIdx.z * nH * nW + (blockIdx.y - shift_size + H) % H / window_size * nH + (blockIdx.x - shift_size + W) % W / window_size) * window_size * window_size * C +
+            (blockIdx.z * nH * nW + (blockIdx.y - shift_size + H) % H / window_size * nW + (blockIdx.x - shift_size + W) % W / window_size) * window_size * window_size * C +
             (blockIdx.y - shift_size + H) % window_size * window_size * C + 
             (blockIdx.x - shift_size + W) % window_size * C +
             i;
