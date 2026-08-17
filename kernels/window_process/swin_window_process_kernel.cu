@@ -38,16 +38,21 @@ int best_block_dim(int feat_dim){
 }
 
 
+// input:  [B, H, W, C]
+// output: [B*nH*nW, window_h, window_w, C]
+// grid:   (window_w, window_h, B*nH*nW) -- x indexes columns, y indexes rows
 template <typename T>
 __global__ void roll_and_window_partition_forward_cuda_kernel(
-    T* input, 
-    T* output, 
+    T* input,
+    T* output,
     const int B,
     const int H,
     const int W,
     const int C,
-    const int shift_size,
-    const int window_size,
+    const int shift_h,
+    const int shift_w,
+    const int window_h,
+    const int window_w,
     const int nH,
     const int nW){
     // start
@@ -57,24 +62,29 @@ __global__ void roll_and_window_partition_forward_cuda_kernel(
     for (int i = index; i < C; i += blockDim.x) {
         offset = ((blockIdx.z * gridDim.y + blockIdx.y) * gridDim.x + blockIdx.x) * C + i; // C = blocksize
         int input_offset = blockIdx.z / (nH * nW) * H * W * C +
-            (blockIdx.z % (nH * nW) / nW * window_size + blockIdx.y - shift_size + H) % H * W * C + 
-            (blockIdx.z % nW * window_size + blockIdx.x - shift_size + W) % W * C +
+            (blockIdx.z % (nH * nW) / nW * window_h + blockIdx.y - shift_h + H) % H * W * C +
+            (blockIdx.z % nW * window_w + blockIdx.x - shift_w + W) % W * C +
             i;
         output[offset] = (T)(__ldg(input + input_offset));
     }
 }
 
 
+// grad_in:  [B*nH*nW, window_h, window_w, C]
+// grad_out: [B, H, W, C]
+// grid:     (W, H, B)
 template <typename T>
 __global__ void roll_and_window_partition_backward_cuda_kernel(
-    T* grad_in, 
-    T* grad_out, 
+    T* grad_in,
+    T* grad_out,
     const int B,
     const int H,
     const int W,
     const int C,
-    const int shift_size,
-    const int window_size,
+    const int shift_h,
+    const int shift_w,
+    const int window_h,
+    const int window_w,
     const int nH,
     const int nW){
     // start
@@ -82,26 +92,31 @@ __global__ void roll_and_window_partition_backward_cuda_kernel(
     int offset;
     for (int i = index; i < C; i += blockDim.x) {
         offset = ((blockIdx.z * gridDim.y + blockIdx.y) * gridDim.x + blockIdx.x) * C + i; // C = blocksize
-        int input_offset = 
-        (blockIdx.z * nH * nW + (blockIdx.y + shift_size + H) % H / window_size * nW + (blockIdx.x + shift_size + W) % W / window_size) * window_size * window_size * C +
-        (blockIdx.y + shift_size + H ) % H % window_size * window_size * C +
-        (blockIdx.x + shift_size + W ) % W % window_size * C +
+        int input_offset =
+        (blockIdx.z * nH * nW + (blockIdx.y + shift_h + H) % H / window_h * nW + (blockIdx.x + shift_w + W) % W / window_w) * window_h * window_w * C +
+        (blockIdx.y + shift_h + H ) % H % window_h * window_w * C +
+        (blockIdx.x + shift_w + W ) % W % window_w * C +
         i;
         grad_out[offset] = (T)(__ldg(grad_in + input_offset));
     }
 }
 
 
+// input:  [B*nH*nW, window_h, window_w, C]
+// output: [B, H, W, C]
+// grid:   (W, H, B)
 template <typename T>
 __global__ void window_merge_and_roll_forward_cuda_kernel(
-    T* input, 
-    T* output, 
+    T* input,
+    T* output,
     const int B,
     const int H,
     const int W,
     const int C,
-    const int shift_size,
-    const int window_size,
+    const int shift_h,
+    const int shift_w,
+    const int window_h,
+    const int window_w,
     const int nH,
     const int nW){
     // start
@@ -109,10 +124,10 @@ __global__ void window_merge_and_roll_forward_cuda_kernel(
     int offset;
     for (int i = index; i < C; i += blockDim.x) {
         offset = ((blockIdx.z * gridDim.y + blockIdx.y) * gridDim.x + blockIdx.x) * C + i; // C = blocksize
-        int input_offset = 
-            (blockIdx.z * nH * nW + (blockIdx.y - shift_size + H) % H / window_size * nW + (blockIdx.x - shift_size + W) % W / window_size) * window_size * window_size * C +
-            (blockIdx.y - shift_size + H) % window_size * window_size * C + 
-            (blockIdx.x - shift_size + W) % window_size * C +
+        int input_offset =
+            (blockIdx.z * nH * nW + (blockIdx.y - shift_h + H) % H / window_h * nW + (blockIdx.x - shift_w + W) % W / window_w) * window_h * window_w * C +
+            (blockIdx.y - shift_h + H) % H % window_h * window_w * C +
+            (blockIdx.x - shift_w + W) % W % window_w * C +
             i;
         output[offset] = (T)(__ldg(input + input_offset));
     }
@@ -120,16 +135,21 @@ __global__ void window_merge_and_roll_forward_cuda_kernel(
 
 
 
+// grad_in:  [B, H, W, C]
+// grad_out: [B*nH*nW, window_h, window_w, C]
+// grid:     (window_w, window_h, B*nH*nW)
 template <typename T>
 __global__ void window_merge_and_roll_backward_cuda_kernel(
-    T* grad_in, 
-    T* grad_out, 
+    T* grad_in,
+    T* grad_out,
     const int B,
     const int H,
     const int W,
     const int C,
-    const int shift_size,
-    const int window_size,
+    const int shift_h,
+    const int shift_w,
+    const int window_h,
+    const int window_w,
     const int nH,
     const int nW){
     // start
@@ -137,41 +157,43 @@ __global__ void window_merge_and_roll_backward_cuda_kernel(
     int offset;
     for (int i = index; i < C; i += blockDim.x) {
         offset = ((blockIdx.z * gridDim.y + blockIdx.y) * gridDim.x + blockIdx.x) * C + i; // C = blocksize
-        int input_offset = 
+        int input_offset =
         (blockIdx.z / (nH * nW)) * H * W * C +
-        (blockIdx.z % (nH * nW) / nW * window_size + blockIdx.y + shift_size + H) % H * W * C +
-        (blockIdx.z % nW * window_size + blockIdx.x + shift_size + W) % W * C +
+        (blockIdx.z % (nH * nW) / nW * window_h + blockIdx.y + shift_h + H) % H * W * C +
+        (blockIdx.z % nW * window_w + blockIdx.x + shift_w + W) % W * C +
         i;
         grad_out[offset] = (T)(__ldg(grad_in + input_offset));
     }
 }
 
 // input: [B, H, W, C]
-// output: [B*nH*nW, window_size, window_size, C]
+// output: [B*nH*nW, window_h, window_w, C]
 at::Tensor roll_and_window_partition_forward_cuda(
-    at::Tensor & input, 
+    at::Tensor & input,
     //at::Tensor & output,
     const int B,
     const int H,
     const int W,
     const int C,
-    const int shift_size,
-    const int window_size){
-    
-    int nH = H / window_size;
-    int nW = W / window_size;
+    const int shift_h,
+    const int shift_w,
+    const int window_h,
+    const int window_w){
 
-    dim3 grid(window_size, window_size, B * nH * nW);
+    int nH = H / window_h;
+    int nW = W / window_w;
+
+    dim3 grid(window_w, window_h, B * nH * nW);
     //dim3 block((C + 31) / 32 * 32);
     int blocknum = best_block_dim(C);
     dim3 block(blocknum);
 
     at::Tensor output;
     if (input.scalar_type() == torch::kFloat16){
-        output = torch::empty({B*nH*nW, window_size, window_size, C}, torch::dtype(torch::kFloat16).device(torch::kCUDA).requires_grad(true));
+        output = torch::empty({B*nH*nW, window_h, window_w, C}, torch::dtype(torch::kFloat16).device(torch::kCUDA).requires_grad(true));
     }
     else{
-        output = torch::empty({B*nH*nW, window_size, window_size, C}, torch::dtype(torch::kFloat32).device(torch::kCUDA).requires_grad(true));
+        output = torch::empty({B*nH*nW, window_h, window_w, C}, torch::dtype(torch::kFloat32).device(torch::kCUDA).requires_grad(true));
     }
 
     AT_DISPATCH_FLOATING_TYPES_AND_HALF(input.type(), "roll_and_window_partition_forward_cuda_kernel", ([&] {
@@ -182,8 +204,10 @@ at::Tensor roll_and_window_partition_forward_cuda(
             H,
             W,
             C,
-            shift_size,
-            window_size,
+            shift_h,
+            shift_w,
+            window_h,
+            window_w,
             nH,
             nW);
     }));
@@ -191,19 +215,21 @@ at::Tensor roll_and_window_partition_forward_cuda(
 }
 
 
-// grad_in: [B*nH*nW, window_size, window_size, C]
+// grad_in: [B*nH*nW, window_h, window_w, C]
 // grad_out: [B, H, W, C]
 at::Tensor roll_and_window_partition_backward_cuda(
-    at::Tensor & grad_in, 
+    at::Tensor & grad_in,
     const int B,
     const int H,
     const int W,
     const int C,
-    const int shift_size,
-    const int window_size){
-    
-    int nH = H / window_size;
-    int nW = W / window_size;
+    const int shift_h,
+    const int shift_w,
+    const int window_h,
+    const int window_w){
+
+    int nH = H / window_h;
+    int nW = W / window_w;
 
     dim3 grid(W, H, B);
     //dim3 block((C + 31) / 32 * 32);
@@ -226,8 +252,10 @@ at::Tensor roll_and_window_partition_backward_cuda(
             H,
             W,
             C,
-            shift_size,
-            window_size,
+            shift_h,
+            shift_w,
+            window_h,
+            window_w,
             nH,
             nW);
     }));
@@ -235,20 +263,22 @@ at::Tensor roll_and_window_partition_backward_cuda(
 }
 
 
-// input: [B*nH*nW, window_size, window_size, C]
+// input: [B*nH*nW, window_h, window_w, C]
 // output: [B, H, W, C]
 at::Tensor window_merge_and_roll_forward_cuda(
-    at::Tensor & input, 
+    at::Tensor & input,
     //at::Tensor & output,
     const int B,
     const int H,
     const int W,
     const int C,
-    const int shift_size,
-    const int window_size){
-    
-    int nH = H / window_size;
-    int nW = W / window_size;
+    const int shift_h,
+    const int shift_w,
+    const int window_h,
+    const int window_w){
+
+    int nH = H / window_h;
+    int nW = W / window_w;
 
     dim3 grid(W, H, B);
     //dim3 block((C + 31) / 32 * 32);
@@ -272,8 +302,10 @@ at::Tensor window_merge_and_roll_forward_cuda(
             H,
             W,
             C,
-            shift_size,
-            window_size,
+            shift_h,
+            shift_w,
+            window_h,
+            window_w,
             nH,
             nW);
     }));
@@ -281,29 +313,33 @@ at::Tensor window_merge_and_roll_forward_cuda(
 }
 
 
+// grad_in: [B, H, W, C]
+// grad_out: [B*nH*nW, window_h, window_w, C]
 at::Tensor window_merge_and_roll_backward_cuda(
-    at::Tensor & grad_in, 
+    at::Tensor & grad_in,
     const int B,
     const int H,
     const int W,
     const int C,
-    const int shift_size,
-    const int window_size){
-    
-    int nH = H / window_size;
-    int nW = W / window_size;
+    const int shift_h,
+    const int shift_w,
+    const int window_h,
+    const int window_w){
 
-    dim3 grid(window_size, window_size, B * nH * nW);
+    int nH = H / window_h;
+    int nW = W / window_w;
+
+    dim3 grid(window_w, window_h, B * nH * nW);
     //dim3 block((C + 31) / 32 * 32);
     int blocknum = best_block_dim(C);
     dim3 block(blocknum);
 
     at::Tensor grad_out;
     if (grad_in.scalar_type() == torch::kFloat16){
-        grad_out = torch::empty({B*nH*nW, window_size, window_size, C}, torch::dtype(torch::kFloat16).device(torch::kCUDA).requires_grad(false));
+        grad_out = torch::empty({B*nH*nW, window_h, window_w, C}, torch::dtype(torch::kFloat16).device(torch::kCUDA).requires_grad(false));
     }
     else{
-        grad_out = torch::empty({B*nH*nW, window_size, window_size, C}, torch::dtype(torch::kFloat32).device(torch::kCUDA).requires_grad(false));
+        grad_out = torch::empty({B*nH*nW, window_h, window_w, C}, torch::dtype(torch::kFloat32).device(torch::kCUDA).requires_grad(false));
     }
 
     AT_DISPATCH_FLOATING_TYPES_AND_HALF(grad_in.type(), "window_merge_and_roll_backward_cuda_kernel", ([&] {
@@ -314,8 +350,10 @@ at::Tensor window_merge_and_roll_backward_cuda(
             H,
             W,
             C,
-            shift_size,
-            window_size,
+            shift_h,
+            shift_w,
+            window_h,
+            window_w,
             nH,
             nW);
     }));
