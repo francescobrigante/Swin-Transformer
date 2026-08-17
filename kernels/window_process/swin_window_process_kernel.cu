@@ -16,6 +16,8 @@
 
 #include <ATen/ATen.h>
 #include <ATen/Dispatch.h>
+#include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAException.h>
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
@@ -191,7 +193,7 @@ at::Tensor roll_and_window_partition_forward_cuda(
     at::Tensor output = at::empty({B*nH*nW, window_h, window_w, C}, input.options());
 
     AT_DISPATCH_FLOATING_TYPES_AND_HALF(input.scalar_type(), "roll_and_window_partition_forward_cuda_kernel", ([&] {
-        roll_and_window_partition_forward_cuda_kernel<scalar_t><<<grid, block, 0>>>(
+        roll_and_window_partition_forward_cuda_kernel<scalar_t><<<grid, block, 0, at::cuda::getCurrentCUDAStream()>>>(
             input.data_ptr<scalar_t>(),
             output.data_ptr<scalar_t>(),
             B,
@@ -205,6 +207,7 @@ at::Tensor roll_and_window_partition_forward_cuda(
             nH,
             nW);
     }));
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
     return output;
 }
 
@@ -233,7 +236,7 @@ at::Tensor roll_and_window_partition_backward_cuda(
     at::Tensor grad_out = at::empty({B, H, W, C}, grad_in.options());
 
     AT_DISPATCH_FLOATING_TYPES_AND_HALF(grad_in.scalar_type(), "roll_and_window_partition_backward_cuda_kernel", ([&] {
-        roll_and_window_partition_backward_cuda_kernel<scalar_t><<<grid, block, 0>>>(
+        roll_and_window_partition_backward_cuda_kernel<scalar_t><<<grid, block, 0, at::cuda::getCurrentCUDAStream()>>>(
             grad_in.data_ptr<scalar_t>(),
             grad_out.data_ptr<scalar_t>(),
             B,
@@ -247,6 +250,7 @@ at::Tensor roll_and_window_partition_backward_cuda(
             nH,
             nW);
     }));
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
     return grad_out;
 }
 
@@ -276,7 +280,7 @@ at::Tensor window_merge_and_roll_forward_cuda(
     at::Tensor output = at::empty({B, H, W, C}, input.options());
 
     AT_DISPATCH_FLOATING_TYPES_AND_HALF(input.scalar_type(), "window_merge_and_roll_forward_cuda_kernel", ([&] {
-        window_merge_and_roll_forward_cuda_kernel<scalar_t><<<grid, block, 0>>>(
+        window_merge_and_roll_forward_cuda_kernel<scalar_t><<<grid, block, 0, at::cuda::getCurrentCUDAStream()>>>(
             input.data_ptr<scalar_t>(),
             output.data_ptr<scalar_t>(),
             B,
@@ -290,6 +294,7 @@ at::Tensor window_merge_and_roll_forward_cuda(
             nH,
             nW);
     }));
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
     return output;
 }
 
@@ -318,7 +323,7 @@ at::Tensor window_merge_and_roll_backward_cuda(
     at::Tensor grad_out = at::empty({B*nH*nW, window_h, window_w, C}, grad_in.options());
 
     AT_DISPATCH_FLOATING_TYPES_AND_HALF(grad_in.scalar_type(), "window_merge_and_roll_backward_cuda_kernel", ([&] {
-        window_merge_and_roll_backward_cuda_kernel<scalar_t><<<grid, block, 0>>>(
+        window_merge_and_roll_backward_cuda_kernel<scalar_t><<<grid, block, 0, at::cuda::getCurrentCUDAStream()>>>(
             grad_in.data_ptr<scalar_t>(),
             grad_out.data_ptr<scalar_t>(),
             B,
@@ -332,5 +337,6 @@ at::Tensor window_merge_and_roll_backward_cuda(
             nH,
             nW);
     }));
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
     return grad_out;
 }
