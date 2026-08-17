@@ -15,10 +15,10 @@
  */
 
 #include <ATen/ATen.h>
+#include <ATen/Dispatch.h>
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
-#include <torch/extension.h>
 #include <stdio.h>
 
 int best_block_dim(int feat_dim){
@@ -188,18 +188,12 @@ at::Tensor roll_and_window_partition_forward_cuda(
     int blocknum = best_block_dim(C);
     dim3 block(blocknum);
 
-    at::Tensor output;
-    if (input.scalar_type() == torch::kFloat16){
-        output = torch::empty({B*nH*nW, window_h, window_w, C}, torch::dtype(torch::kFloat16).device(torch::kCUDA).requires_grad(true));
-    }
-    else{
-        output = torch::empty({B*nH*nW, window_h, window_w, C}, torch::dtype(torch::kFloat32).device(torch::kCUDA).requires_grad(true));
-    }
+    at::Tensor output = at::empty({B*nH*nW, window_h, window_w, C}, input.options());
 
-    AT_DISPATCH_FLOATING_TYPES_AND_HALF(input.type(), "roll_and_window_partition_forward_cuda_kernel", ([&] {
+    AT_DISPATCH_FLOATING_TYPES_AND_HALF(input.scalar_type(), "roll_and_window_partition_forward_cuda_kernel", ([&] {
         roll_and_window_partition_forward_cuda_kernel<scalar_t><<<grid, block, 0>>>(
-            input.data<scalar_t>(),
-            output.data<scalar_t>(),
+            input.data_ptr<scalar_t>(),
+            output.data_ptr<scalar_t>(),
             B,
             H,
             W,
@@ -236,18 +230,12 @@ at::Tensor roll_and_window_partition_backward_cuda(
     int blocknum = best_block_dim(C);
     dim3 block(blocknum);
 
-    at::Tensor grad_out;
-    if (grad_in.scalar_type() == torch::kFloat16){
-        grad_out = torch::empty({B, H, W, C}, torch::dtype(torch::kFloat16).device(torch::kCUDA).requires_grad(false));
-    }
-    else{
-        grad_out = torch::empty({B, H, W, C}, torch::dtype(torch::kFloat32).device(torch::kCUDA).requires_grad(false));
-    }
+    at::Tensor grad_out = at::empty({B, H, W, C}, grad_in.options());
 
-    AT_DISPATCH_FLOATING_TYPES_AND_HALF(grad_in.type(), "roll_and_window_partition_backward_cuda_kernel", ([&] {
+    AT_DISPATCH_FLOATING_TYPES_AND_HALF(grad_in.scalar_type(), "roll_and_window_partition_backward_cuda_kernel", ([&] {
         roll_and_window_partition_backward_cuda_kernel<scalar_t><<<grid, block, 0>>>(
-            grad_in.data<scalar_t>(),
-            grad_out.data<scalar_t>(),
+            grad_in.data_ptr<scalar_t>(),
+            grad_out.data_ptr<scalar_t>(),
             B,
             H,
             W,
@@ -285,19 +273,12 @@ at::Tensor window_merge_and_roll_forward_cuda(
     int blocknum = best_block_dim(C);
     dim3 block(blocknum);
 
-    //generate output tensor inside
-    at::Tensor output;
-    if (input.scalar_type() == torch::kFloat16){
-        output = torch::empty({B, H, W, C}, torch::dtype(torch::kFloat16).device(torch::kCUDA).requires_grad(true));
-    }
-    else{
-        output = torch::empty({B, H, W, C}, torch::dtype(torch::kFloat32).device(torch::kCUDA).requires_grad(true));
-    }
+    at::Tensor output = at::empty({B, H, W, C}, input.options());
 
-    AT_DISPATCH_FLOATING_TYPES_AND_HALF(input.type(), "window_merge_and_roll_forward_cuda_kernel", ([&] {
+    AT_DISPATCH_FLOATING_TYPES_AND_HALF(input.scalar_type(), "window_merge_and_roll_forward_cuda_kernel", ([&] {
         window_merge_and_roll_forward_cuda_kernel<scalar_t><<<grid, block, 0>>>(
-            input.data<scalar_t>(),
-            output.data<scalar_t>(),
+            input.data_ptr<scalar_t>(),
+            output.data_ptr<scalar_t>(),
             B,
             H,
             W,
@@ -334,18 +315,12 @@ at::Tensor window_merge_and_roll_backward_cuda(
     int blocknum = best_block_dim(C);
     dim3 block(blocknum);
 
-    at::Tensor grad_out;
-    if (grad_in.scalar_type() == torch::kFloat16){
-        grad_out = torch::empty({B*nH*nW, window_h, window_w, C}, torch::dtype(torch::kFloat16).device(torch::kCUDA).requires_grad(false));
-    }
-    else{
-        grad_out = torch::empty({B*nH*nW, window_h, window_w, C}, torch::dtype(torch::kFloat32).device(torch::kCUDA).requires_grad(false));
-    }
+    at::Tensor grad_out = at::empty({B*nH*nW, window_h, window_w, C}, grad_in.options());
 
-    AT_DISPATCH_FLOATING_TYPES_AND_HALF(grad_in.type(), "window_merge_and_roll_backward_cuda_kernel", ([&] {
+    AT_DISPATCH_FLOATING_TYPES_AND_HALF(grad_in.scalar_type(), "window_merge_and_roll_backward_cuda_kernel", ([&] {
         window_merge_and_roll_backward_cuda_kernel<scalar_t><<<grid, block, 0>>>(
-            grad_in.data<scalar_t>(),
-            grad_out.data<scalar_t>(),
+            grad_in.data_ptr<scalar_t>(),
+            grad_out.data_ptr<scalar_t>(),
             B,
             H,
             W,
