@@ -17,6 +17,9 @@
 #include <torch/torch.h>
 #include <torch/extension.h>
 
+#include <cstdlib>
+#include <limits>
+
 
 at::Tensor roll_and_window_partition_forward_cuda(
     at::Tensor & input, 
@@ -74,6 +77,53 @@ at::Tensor window_merge_and_roll_backward_cuda(
 #define CHECK_INPUT(x) CHECK_CUDA(x); CHECK_CONTIGUOUS(x)
 
 
+// The kernels derive nH = H / window_h and nW = W / window_w with integer
+// division and index with int arithmetic. Violating any of the assumptions below
+// does not fail: it silently reads the wrong element, or reads out of bounds.
+// All four entry points share the same constraints -- the window layout and the
+// spatial layout hold the same number of elements -- so one check covers them.
+static void check_window_args(
+    const at::Tensor & tensor,
+    const int B,
+    const int H,
+    const int W,
+    const int C,
+    const int shift_h,
+    const int shift_w,
+    const int window_h,
+    const int window_w){
+
+    TORCH_CHECK(B > 0 && H > 0 && W > 0 && C > 0,
+        "B, H, W and C must be positive, got (", B, ", ", H, ", ", W, ", ", C, ")");
+    TORCH_CHECK(window_h > 0 && window_w > 0,
+        "window size must be positive, got (", window_h, ", ", window_w, ")");
+    TORCH_CHECK(H % window_h == 0,
+        "H (", H, ") must be divisible by window_h (", window_h, ")");
+    TORCH_CHECK(W % window_w == 0,
+        "W (", W, ") must be divisible by window_w (", window_w, ")");
+    TORCH_CHECK(std::abs(shift_h) < window_h && std::abs(shift_w) < window_w,
+        "|shift| must be smaller than the window size on each axis, got shift (",
+        shift_h, ", ", shift_w, ") for window (", window_h, ", ", window_w, ")");
+
+    const int64_t numel = static_cast<int64_t>(B) * H * W * C;
+    TORCH_CHECK(tensor.numel() == numel,
+        "expected ", numel, " elements for B=", B, ", H=", H, ", W=", W, ", C=", C,
+        ", got ", tensor.numel());
+    // Offsets are computed in int inside the kernels, as they are upstream.
+    TORCH_CHECK(numel <= static_cast<int64_t>(std::numeric_limits<int>::max()),
+        "tensor holds ", numel, " elements; kernel offsets are computed in int32 "
+        "and would overflow");
+
+    // grid.z is B * nH * nW for the partition kernels and B for the merge ones;
+    // grid.y is window_h or H. Both are capped at 65535 by the CUDA driver.
+    const int64_t num_windows = static_cast<int64_t>(B) * (H / window_h) * (W / window_w);
+    TORCH_CHECK(num_windows <= 65535,
+        "B * nH * nW = ", num_windows, " exceeds the CUDA grid.z limit of 65535");
+    TORCH_CHECK(H <= 65535,
+        "H = ", H, " exceeds the CUDA grid.y limit of 65535");
+}
+
+
 
 at::Tensor roll_and_window_partition_forward(
     at::Tensor & input, 
@@ -87,6 +137,7 @@ at::Tensor roll_and_window_partition_forward(
     const int window_h,
     const int window_w){
     CHECK_INPUT(input);
+    check_window_args(input, B, H, W, C, shift_h, shift_w, window_h, window_w);
     return roll_and_window_partition_forward_cuda(input, B, H, W, C, shift_h, shift_w, window_h, window_w);
 }
 
@@ -103,6 +154,7 @@ at::Tensor roll_and_window_partition_backward(
     const int window_h,
     const int window_w){
     CHECK_INPUT(grad_in);
+    check_window_args(grad_in, B, H, W, C, shift_h, shift_w, window_h, window_w);
     return roll_and_window_partition_backward_cuda(grad_in, B, H, W, C, shift_h, shift_w, window_h, window_w);
 }
 
@@ -119,6 +171,7 @@ at::Tensor window_merge_and_roll_forward(
     const int window_h,
     const int window_w){
     CHECK_INPUT(input);
+    check_window_args(input, B, H, W, C, shift_h, shift_w, window_h, window_w);
     return window_merge_and_roll_forward_cuda(input, B, H, W, C, shift_h, shift_w, window_h, window_w);
 }
 
@@ -135,6 +188,7 @@ at::Tensor window_merge_and_roll_backward(
     const int window_h,
     const int window_w){
     CHECK_INPUT(grad_in);
+    check_window_args(grad_in, B, H, W, C, shift_h, shift_w, window_h, window_w);
     return window_merge_and_roll_backward_cuda(grad_in, B, H, W, C, shift_h, shift_w, window_h, window_w);
 }
 
