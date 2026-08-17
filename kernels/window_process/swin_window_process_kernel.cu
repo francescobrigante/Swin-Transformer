@@ -192,7 +192,8 @@ at::Tensor roll_and_window_partition_forward_cuda(
 
     at::Tensor output = at::empty({B*nH*nW, window_h, window_w, C}, input.options());
 
-    AT_DISPATCH_FLOATING_TYPES_AND_HALF(input.scalar_type(), "roll_and_window_partition_forward_cuda_kernel", ([&] {
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        input.scalar_type(), "roll_and_window_partition_forward_cuda_kernel", ([&] {
         roll_and_window_partition_forward_cuda_kernel<scalar_t><<<grid, block, 0, at::cuda::getCurrentCUDAStream()>>>(
             input.data_ptr<scalar_t>(),
             output.data_ptr<scalar_t>(),
@@ -235,7 +236,8 @@ at::Tensor roll_and_window_partition_backward_cuda(
 
     at::Tensor grad_out = at::empty({B, H, W, C}, grad_in.options());
 
-    AT_DISPATCH_FLOATING_TYPES_AND_HALF(grad_in.scalar_type(), "roll_and_window_partition_backward_cuda_kernel", ([&] {
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        grad_in.scalar_type(), "roll_and_window_partition_backward_cuda_kernel", ([&] {
         roll_and_window_partition_backward_cuda_kernel<scalar_t><<<grid, block, 0, at::cuda::getCurrentCUDAStream()>>>(
             grad_in.data_ptr<scalar_t>(),
             grad_out.data_ptr<scalar_t>(),
@@ -279,7 +281,8 @@ at::Tensor window_merge_and_roll_forward_cuda(
 
     at::Tensor output = at::empty({B, H, W, C}, input.options());
 
-    AT_DISPATCH_FLOATING_TYPES_AND_HALF(input.scalar_type(), "window_merge_and_roll_forward_cuda_kernel", ([&] {
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        input.scalar_type(), "window_merge_and_roll_forward_cuda_kernel", ([&] {
         window_merge_and_roll_forward_cuda_kernel<scalar_t><<<grid, block, 0, at::cuda::getCurrentCUDAStream()>>>(
             input.data_ptr<scalar_t>(),
             output.data_ptr<scalar_t>(),
@@ -322,7 +325,8 @@ at::Tensor window_merge_and_roll_backward_cuda(
 
     at::Tensor grad_out = at::empty({B*nH*nW, window_h, window_w, C}, grad_in.options());
 
-    AT_DISPATCH_FLOATING_TYPES_AND_HALF(grad_in.scalar_type(), "window_merge_and_roll_backward_cuda_kernel", ([&] {
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        grad_in.scalar_type(), "window_merge_and_roll_backward_cuda_kernel", ([&] {
         window_merge_and_roll_backward_cuda_kernel<scalar_t><<<grid, block, 0, at::cuda::getCurrentCUDAStream()>>>(
             grad_in.data_ptr<scalar_t>(),
             grad_out.data_ptr<scalar_t>(),
