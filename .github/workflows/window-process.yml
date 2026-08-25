@@ -1,0 +1,56 @@
+# Correctness checks for the fused window kernels that need no GPU.
+#
+# The kernels perform no arithmetic on tensor values: each is a gather whose
+# whole logic is the computation of input_offset from blockIdx. reference.py
+# transcribes that to PyTorch, so the index math can be checked on a CPU runner.
+# torch.utils.hipify is pure Python for the same reason, so the ROCm/HIP
+# translation can be verified here too.
+#
+# The parity tests against the compiled extension (unit_test.py,
+# test_model_parity.py) need a CUDA device and are not run here.
+
+name: window process
+
+on:
+  push:
+    paths:
+      - 'kernels/window_process/**'
+      - '.github/workflows/window-process.yml'
+  pull_request:
+    paths:
+      - 'kernels/window_process/**'
+      - '.github/workflows/window-process.yml'
+  workflow_dispatch:
+
+jobs:
+  cpu-checks:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.9', '3.11']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install PyTorch (CPU build)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Index math
+        working-directory: kernels/window_process
+        run: python -m unittest test_index_math -v
+
+      - name: CUDA to HIP translation
+        working-directory: kernels/window_process
+        run: python hipify_check.py
+
+      - name: GPU test files import and skip cleanly
+        working-directory: kernels/window_process
+        run: |
+          python unit_test.py
+          python test_model_parity.py
