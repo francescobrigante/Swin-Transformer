@@ -63,6 +63,10 @@ why the call sites pass `-shift_size` forward and `+shift_size` back.
 All of these are enforced by `TORCH_CHECK` before the launch. Violating them
 used to read the wrong element, or read out of bounds, without any error.
 
+Note that `nH != nW` follows from `H != W` alone: with a square window,
+`nH = H / window_size` and `nW = W / window_size`. A non-square window is not
+required, and `img_size` is documented as `int | tuple(int)`.
+
 ## Tests
 
 | file | needs a GPU | what it covers |

@@ -51,7 +51,7 @@ def set_fused(model, enabled):
 @requires_everything
 class TestModelParity(unittest.TestCase):
 
-    def _model(self, img_size=56, window_size=7):
+    def _model(self, img_size=56, window_size=7, depths=(2, 2), num_heads=(3, 6)):
         torch.manual_seed(0)
         model = SwinTransformer(
             img_size=img_size,
@@ -59,13 +59,44 @@ class TestModelParity(unittest.TestCase):
             in_chans=3,
             num_classes=10,
             embed_dim=48,
-            depths=[2, 2],
-            num_heads=[3, 6],
+            depths=list(depths),
+            num_heads=list(num_heads),
             window_size=window_size,
             drop_path_rate=0.0,
             fused_window_process=False,
         )
         return model.cuda().eval()
+
+    def test_non_square_image(self):
+        """img_size is documented as `int | tuple(int)`, and a non-square one
+        gives nH != nW inside the shifted blocks -- the configuration the row
+        stride fix is about.
+
+        For img_size=(256, 128) with window_size=8 the shifted blocks run at
+        64x32 and 32x16, so nH/nW are 8/4 and 4/2. Before the fix the merge
+        kernel indexes past the end of its input on both.
+        """
+        model = self._model(img_size=(256, 128), window_size=8,
+                            depths=(2, 2, 2), num_heads=(3, 6, 12))
+
+        shifted_non_square = [
+            m for m in model.modules()
+            if type(m).__name__ == 'SwinTransformerBlock'
+            and m.shift_size > 0
+            and (m.input_resolution[0] // m.window_size)
+            != (m.input_resolution[1] // m.window_size)
+        ]
+        self.assertGreater(len(shifted_non_square), 0,
+                           'this configuration must exercise nH != nW')
+
+        x = torch.randn(1, 3, 256, 128, device='cuda')
+        with torch.no_grad():
+            eager = model(x)
+            set_fused(model, True)
+            fused = model(x)
+            set_fused(model, False)
+
+        self.assertTrue(torch.equal(eager, fused))
 
     def test_forward_is_identical(self):
         model = self._model()
