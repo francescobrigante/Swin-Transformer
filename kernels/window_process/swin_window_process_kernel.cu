@@ -23,7 +23,22 @@
 #include <cuda_fp16.h>
 #include <stdio.h>
 
+// Width of the block that walks the channel dimension.
+//
+// These kernels use no shared memory, no __syncthreads() and no warp-level
+// primitives, so this width affects occupancy only and never correctness. That
+// is also why they port to AMD unchanged: CDNA schedules 64-wide wavefronts
+// against NVIDIA's 32-wide warps, and nothing here depends on that width. All
+// three values below are multiples of 64, so neither platform is left running a
+// partial wave.
+//
+// The thresholds were tuned on NVIDIA and have not been measured on CDNA.
+// Compile with -DSWIN_WP_BLOCK_DIM=N to override them while tuning.
 int best_block_dim(int feat_dim){
+#ifdef SWIN_WP_BLOCK_DIM
+    (void)feat_dim;
+    return SWIN_WP_BLOCK_DIM;
+#else
     int best_dim;
     if (feat_dim < 384){
         best_dim = 64;
@@ -37,6 +52,7 @@ int best_block_dim(int feat_dim){
         }
     }
     return best_dim;
+#endif
 }
 
 
