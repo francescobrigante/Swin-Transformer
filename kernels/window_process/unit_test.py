@@ -46,6 +46,15 @@ SHAPES = [
     (2, 16, 64, 64, 4, 16),    # nH=4,  nW=4     non-square window
     (2, 64, 16, 64, 16, 4),    # nH=4,  nW=4     non-square window, transposed
     (2, 24, 24, 32, 24, 24),   # nH == nW == 1   a single window
+    # C selects the block width in best_block_dim(): < 384 -> 64 threads,
+    # < 1024 -> 128, otherwise 256. All three branches must be exercised, and C
+    # must be smaller than, equal to and larger than the block width so that the
+    # strided `for (i = threadIdx.x; i < C; i += blockDim.x)` loop is covered in
+    # its partial, exact and multi-pass forms.
+    (2, 16, 16, 1, 8, 8),      # C < blockDim      64 threads, 63 idle
+    (2, 16, 16, 64, 8, 8),     # C == blockDim     64 threads, one pass
+    (2, 16, 16, 512, 8, 8),    # 384 <= C < 1024   128 threads
+    (2, 16, 16, 1024, 8, 8),   # C >= 1024         256 threads
 ]
 
 
@@ -157,6 +166,72 @@ class TestWindowProcess(unittest.TestCase):
                 self.assertTrue(torch.equal(x, back))
 
 
+    def test_non_contiguous_gradient(self):
+        """An upstream op can hand the backward a non-contiguous gradient.
+
+        The C++ side asserts contiguity, so window_process.py normalises it.
+        """
+        B, H, W, C, window, shift = 2, 16, 16, 32, (8, 8), (4, 4)
+        n = B * (H // window[0]) * (W // window[1])
+        x = spatial(B, H, W, C, torch.float32)
+        grad = torch.randn((n, window[1], window[0], C)).cuda().transpose(1, 2)
+        self.assertFalse(grad.is_contiguous())
+
+        a, b = leaf(x), leaf(x)
+        pyt_forward(a, shift, window).backward(grad)
+        WindowProcess.apply(b, B, H, W, C, (-shift[0], -shift[1]), window).backward(grad)
+        self.assertTrue(torch.equal(a.grad, b.grad))
+
+
+@requires_cuda
+class TestStreamSemantics(unittest.TestCase):
+    """The kernels must run on the current stream, not on the default one.
+
+    A race against the default stream is timing dependent and makes a poor
+    test. CUDA graph capture is the deterministic form of the same property:
+    capture runs on a non-default stream and rejects any kernel launched on the
+    legacy default stream outright, so this fails to capture unless the launch
+    uses at::cuda::getCurrentCUDAStream().
+    """
+
+    def test_capturable_in_a_cuda_graph(self):
+        B, H, W, C, window, shift = 2, 16, 16, 32, (8, 8), (4, 4)
+        static_in = torch.randn((B, H, W, C), device='cuda')
+
+        def call():
+            return WindowProcess.apply(
+                static_in, B, H, W, C, (-shift[0], -shift[1]), window)
+
+        # Warm up on a side stream, as the CUDA graph capture protocol requires.
+        side = torch.cuda.Stream()
+        side.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(side):
+            for _ in range(3):
+                call()
+        torch.cuda.current_stream().wait_stream(side)
+
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            static_out = call()
+        graph.replay()
+        torch.cuda.synchronize()
+
+        self.assertTrue(torch.equal(static_out, pyt_forward(static_in, shift, window)))
+
+    def test_matches_when_run_on_a_side_stream(self):
+        B, H, W, C, window, shift = 2, 16, 16, 32, (8, 8), (4, 4)
+        x = torch.randn((B, H, W, C), device='cuda')
+        expected = pyt_forward(x, shift, window)
+
+        side = torch.cuda.Stream()
+        side.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(side):
+            fused = WindowProcess.apply(x, B, H, W, C, (-shift[0], -shift[1]), window)
+        torch.cuda.current_stream().wait_stream(side)
+
+        self.assertTrue(torch.equal(expected, fused))
+
+
 @requires_cuda
 class TestScalarWindowStillWorks(unittest.TestCase):
     """An int shift/window must behave exactly as the (h, w) pair it expands to.
@@ -205,6 +280,13 @@ class TestPreconditions(unittest.TestCase):
     def test_shape_must_match_tensor(self):
         with self.assertRaisesRegex(RuntimeError, 'expected'):
             self._apply(C=self.C * 2)
+
+    def test_window_count_above_the_grid_limit_is_rejected(self):
+        """B * nH * nW is grid.z, which the CUDA driver caps at 65535."""
+        B, H, W, C = 70000, 8, 8, 1
+        big = leaf(spatial(B, H, W, C, torch.float32), False)
+        with self.assertRaisesRegex(RuntimeError, 'grid.z limit'):
+            WindowProcess.apply(big, B, H, W, C, (0, 0), (8, 8))
 
     def test_non_contiguous_input_is_rejected(self):
         transposed = self.x.transpose(1, 2)
