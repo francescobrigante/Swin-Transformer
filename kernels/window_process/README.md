@@ -95,6 +95,82 @@ PyTorch. That is not an approximation of the kernels — the offset computation 
 their entire logic — so it makes their correctness testable on a CPU, with no
 compiled extension.
 
+## Performance
+
+`benchmark.py`, the fused kernel against the `torch.roll` + `window_partition`
+it replaces, forward and backward, on an **RTX 3080 (10 GB)**, torch
+`2.8.0+cu129` / CUDA 12.9, batch 192, 200 iterations after 10 warm-up:
+
+| config | op | dtype | eager ms | fused ms | speedup | eager MiB | fused MiB |
+|---|---|---|---:|---:|---:|---:|---:|
+| stage 1 56×56 w7 | partition | float32 | 7.137 | 2.398 | 2.98× | 1543.5 | 882.0 |
+| stage 1 56×56 w7 | partition | float16 | 5.223 | 2.083 | 2.51× | 771.8 | 441.0 |
+| stage 1 56×56 w7 | partition | bfloat16 | 5.074 | 1.948 | 2.60× | 771.8 | 441.0 |
+| stage 1 56×56 w7 | merge | float32 | 7.191 | 2.405 | 2.99× | 1323.0 | 882.0 |
+| stage 1 56×56 w7 | merge | float16 | 5.104 | 2.013 | 2.54× | 661.5 | 441.0 |
+| stage 1 56×56 w7 | merge | bfloat16 | 5.150 | 1.998 | 2.58× | 661.5 | 441.0 |
+| stage 2 28×28 w7 | partition | float32 | 3.711 | 1.156 | 3.21× | 771.8 | 441.0 |
+| stage 2 28×28 w7 | partition | float16 | 2.552 | 0.700 | 3.65× | 392.0 | 224.0 |
+| stage 2 28×28 w7 | partition | bfloat16 | 2.783 | 0.726 | 3.84× | 392.0 | 224.0 |
+| stage 2 28×28 w7 | merge | float32 | 3.907 | 1.222 | 3.20× | 661.5 | 441.0 |
+| stage 2 28×28 w7 | merge | float16 | 2.650 | 0.735 | 3.60× | 336.0 | 224.0 |
+| stage 2 28×28 w7 | merge | bfloat16 | 2.630 | 0.714 | 3.68× | 336.0 | 224.0 |
+| non-square 32×16 w8 | partition | float32 | 1.218 | 0.417 | 2.92× | 252.0 | 144.0 |
+| non-square 32×16 w8 | partition | float16 | 0.870 | 0.335 | 2.59× | 126.0 | 72.0 |
+| non-square 32×16 w8 | partition | bfloat16 | 0.871 | 0.340 | 2.56× | 126.0 | 72.0 |
+| non-square 32×16 w8 | merge | float32 | 1.224 | 0.414 | 2.95× | 216.0 | 144.0 |
+| non-square 32×16 w8 | merge | float16 | 0.872 | 0.346 | 2.52× | 108.0 | 72.0 |
+| non-square 32×16 w8 | merge | bfloat16 | 0.867 | 0.343 | 2.53× | 108.0 | 72.0 |
+| non-square window 16×64 w4×16 | partition | float32 | 2.434 | 0.814 | 2.99× | 504.0 | 288.0 |
+| non-square window 16×64 w4×16 | partition | float16 | 1.681 | 0.658 | 2.55× | 252.0 | 144.0 |
+| non-square window 16×64 w4×16 | partition | bfloat16 | 1.692 | 0.660 | 2.56× | 252.0 | 144.0 |
+| non-square window 16×64 w4×16 | merge | float32 | 2.402 | 0.801 | 3.00× | 432.0 | 288.0 |
+| non-square window 16×64 w4×16 | merge | float16 | 1.708 | 0.658 | 2.59× | 216.0 | 144.0 |
+| non-square window 16×64 w4×16 | merge | bfloat16 | 1.707 | 0.655 | 2.61× | 216.0 | 144.0 |
+
+The path is memory bound, so the gain tracks the second materialisation the
+eager path pays (`torch.roll` writes a copy, `window_partition` calls
+`.contiguous()` for another) and the fused kernel does not; peak memory drops
+with it. `bfloat16` is dispatched directly — the upstream kernel raises on a
+`bfloat16` input, so the fused path previously needed an fp32 round trip.
+
+## Validation
+
+CUDA is validated end to end. The ROCm path is verified statically only — no AMD
+GPU was available.
+
+| check | where | result |
+|---|---|---|
+| index math (`reference.py` vs the composed PyTorch ops) | CPU (Apple M1), re-run on the RTX 3080 host | 9/9 |
+| CUDA → HIP translation (`hipify_check.py`) | CPU | complete, every launch keeps its stream |
+| compile the extension | RTX 3080 · torch 2.8.0+cu129 · CUDA 12.9 · MSVC 14.44 | builds, no source change |
+| kernel parity (`unit_test.py`) | RTX 3080 | 15/15 — 4 kernels × fwd/bwd × {f64, f32, f16, bf16} × 13 shapes × 3 shifts, bit-exact |
+| model parity (`test_model_parity.py`) | RTX 3080 | 4/4 — logits and gradients identical, square and non-square (tall and wide) |
+| bug on the compiled kernel | RTX 3080 | pre-fix: a stock `img_size=(256,128)` model gives different logits with the fused path, and `compute-sanitizer` reports an out-of-bounds read; fixed: bit-identical to eager |
+| `compute-sanitizer` (memcheck, initcheck, synccheck), fixed kernel | RTX 3080 | 0 errors — all 4 kernels, fwd + bwd, every shape above |
+| ROCm runtime (build + parity on an AMD GPU) | — | not run — no AMD hardware |
+
+The shapes span every image/window combination: square image with a square
+window, square image with a non-square window, and non-square images with square
+and with non-square windows, including cases where `nH` and `nW` are coprime.
+
+The one substantive ROCm difference is the launch stream. `torch.utils.hipify`
+run on the upstream sources and on this branch:
+
+```c
+// upstream, hipified
+hipLaunchKernelGGL((kernel<scalar_t>), dim3(grid), dim3(block), 0, 0, ...);            // the HIP null stream
+
+// this branch, hipified
+hipLaunchKernelGGL((kernel<scalar_t>), dim3(grid), dim3(block), 0,
+                   at::hip::getCurrentHIPStreamMasqueradingAsCUDA(), ...);
+```
+
+`setup.py` is unchanged: `CUDAExtension` hipifies its own sources when
+`torch.version.hip` is set (`cpp_extension.py`, the `IS_HIP_EXTENSION` branch),
+substitutes `hipcc`, and derives `--offload-arch` from `PYTORCH_ROCM_ARCH` —
+passing an arch through `extra_compile_args` disables that detection.
+
 ## Portability
 
 The kernels use no shared memory, no `__syncthreads()` and no warp-level
