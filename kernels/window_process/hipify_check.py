@@ -194,6 +194,10 @@ def main():
         raise SystemExit(1)
 
     print('\nOK: the CUDA sources translate to HIP with no unmapped symbols.')
+    print('Symbol level only: a symbol can translate and still not compile, '
+          'because\nHIP and CUDA do not always give it the same overload set. '
+          '__ldg is the\ncase in point -- it has no HIP overload for c10::Half. '
+          'Only a real build\nfinds that.')
 
 
 if __name__ == '__main__':
