@@ -24,7 +24,8 @@ class WindowProcess(torch.autograd.Function):
     """Fused torch.roll + window_partition.
 
     Args:
-        input: (B, H, W, C) contiguous float32/float16 CUDA tensor.
+        input: (B, H, W, C) contiguous CUDA tensor. float64, float32,
+            float16 and bfloat16 all dispatch.
         B, H, W, C: shape of `input`.
         shift_size: int or (shift_h, shift_w). This is the *negated* torch.roll
             shift, matching the existing call sites in models/swin_transformer.py.
@@ -68,6 +69,7 @@ class WindowProcessReverse(torch.autograd.Function):
 
     Args:
         input: (B * nH * nW, window_h, window_w, C) contiguous CUDA tensor.
+            float64, float32, float16 and bfloat16 all dispatch.
         B, H, W, C: shape of the *output* feature map.
         shift_size: int or (shift_h, shift_w), the torch.roll shift.
         window_size: int or (window_h, window_w). Must divide H and W per axis.
