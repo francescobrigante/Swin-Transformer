@@ -45,6 +45,7 @@ SHAPES = [
     (2, 16, 32, 64, 8, 8),     # nH=2,  nW=4     silent corruption before the fix
     (2, 16, 64, 64, 4, 16),    # nH=4,  nW=4     non-square window
     (2, 64, 16, 64, 16, 4),    # nH=4,  nW=4     non-square window, transposed
+    (2, 48, 48, 32, 6, 16),    # nH=8,  nW=3     square image, non-square window
     (2, 24, 16, 64, 8, 8),     # nH=3,  nW=2     coprime counts, both > 1
     (2, 24, 40, 32, 8, 8),     # nH=3,  nW=5     coprime counts, nH < nW
     (2, 24, 24, 32, 24, 24),   # nH == nW == 1   a single window

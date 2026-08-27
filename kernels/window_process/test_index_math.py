@@ -27,6 +27,7 @@ SHAPES = [
     (8, 16, 4, 4),     # nH=2, nW=4      wider than tall
     (8, 32, 4, 8),     # nH=2, nW=4      non-square window
     (32, 8, 8, 4),     # nH=4, nW=2      non-square window, taller than wide
+    (24, 24, 4, 8),    # nH=6, nW=3      square grid, non-square window
     (12, 8, 4, 4),     # nH=3, nW=2      coprime counts, both > 1
     (12, 20, 4, 4),    # nH=3, nW=5      coprime counts, nH < nW
     (8, 8, 8, 8),      # nH == nW == 1   single window
