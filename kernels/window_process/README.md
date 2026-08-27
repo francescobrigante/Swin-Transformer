@@ -158,13 +158,18 @@ The one substantive ROCm difference is the launch stream. `torch.utils.hipify`
 run on the upstream sources and on this branch:
 
 ```c
-// upstream, hipified
-hipLaunchKernelGGL((kernel<scalar_t>), dim3(grid), dim3(block), 0, 0, ...);            // the HIP null stream
+// upstream, hipified            -- 5th arg is 0: the HIP null stream
+hipLaunchKernelGGL((kernel<scalar_t>), dim3(grid), dim3(block), 0, 0, ...);
 
-// this branch, hipified
+// this branch, hipified         -- 5th arg is the current stream
 hipLaunchKernelGGL((kernel<scalar_t>), dim3(grid), dim3(block), 0,
-                   at::hip::getCurrentHIPStreamMasqueradingAsCUDA(), ...);
+                   at::cuda::getCurrentCUDAStream(), ...);
 ```
+
+Older hipify (torch <= 2.8) rewrites that getter to
+`at::hip::getCurrentHIPStreamMasqueradingAsCUDA()`; torch >= 2.9 keeps the
+`at::cuda::` spelling and resolves it through the compatibility headers. Both are
+the current stream; only the `0` on the upstream side is wrong.
 
 `setup.py` is unchanged: `CUDAExtension` hipifies its own sources when
 `torch.version.hip` is set (`cpp_extension.py`, the `IS_HIP_EXTENSION` branch),

@@ -12,8 +12,11 @@
 # GPU. torch.utils.hipify is pure Python, so this runs anywhere, including in CI
 # on a CPU runner.
 #
-# It fails if any CUDA-specific symbol survives translation, and prints the
-# symbols that are deliberately left alone because HIP implements them natively.
+# It fails if a CUDA-only include survives translation, or if a kernel launch
+# reaches HIP without an explicit stream (the null-stream bug). It only reports,
+# without failing, the symbols HIP keeps as is -- either because it implements
+# them natively (blockIdx, __ldg, dim3, ...) or because they resolve through the
+# CUDA-compatibility headers (at::cuda::getCurrentCUDAStream on torch >= 2.9).
 #
 #   python hipify_check.py            # verify
 #   python hipify_check.py --diff     # verify and show the generated HIP source
@@ -32,14 +35,21 @@ from torch.utils.hipify import hipify_python
 
 SOURCES = ['swin_window_process.cpp', 'swin_window_process_kernel.cu']
 
-# Present in the CUDA source and required to disappear from the HIP output.
-# A survivor here means hipify has no rule for it and the ROCm build would fail
-# to compile, or would silently bind to the wrong runtime.
+# Includes a HIP build genuinely does not provide: these must be rewritten, or
+# the ROCm compile fails outright. hipify has rewritten them in every torch
+# version.
 MUST_BE_TRANSLATED = [
     'cuda_runtime.h',
     'cuda_fp16.h',
     'ATen/cuda/CUDAContext.h',
     'c10/cuda/CUDAException.h',
+]
+
+# API symbols older hipify rewrites to an at::hip / C10_HIP spelling, and newer
+# hipify (torch >= 2.9) deliberately leaves alone because they resolve to the HIP
+# runtime through the CUDA-compatibility headers. Either outcome is correct, so
+# this only reports which one happened -- it is never a failure.
+CUDA_COMPAT_SHIMS = [
     'at::cuda::getCurrentCUDAStream',
     'C10_CUDA_KERNEL_LAUNCH_CHECK',
 ]
@@ -110,6 +120,11 @@ def report(staging, mapping, show_diff):
             print(f'  SURVIVED    {token}')
             failures.append(f'{name}: {token} was not translated')
 
+        shims = [t for t in CUDA_COMPAT_SHIMS if t in before]
+        for token in shims:
+            how = 'rewritten' if token not in after else 'kept (resolves via the CUDA-compat headers)'
+            print(f'  shim        {token}  ({how})')
+
         portable = [t for t in KNOWN_PORTABLE if t in before]
         for token in portable:
             if token in after:
@@ -117,7 +132,7 @@ def report(staging, mapping, show_diff):
             else:
                 failures.append(f'{name}: {token} was rewritten but should be portable')
 
-        if not translated and not portable:
+        if not translated and not shims and not portable:
             print('  nothing device specific in this file')
 
         if show_diff:
@@ -132,25 +147,32 @@ def report(staging, mapping, show_diff):
 def check_launch_form(mapping):
     """Every kernel launch must carry an explicit stream argument after translation.
 
-    hipLaunchKernelGGL takes (kernel, grid, block, sharedMem, stream, ...). A
-    launch that reaches HIP without a stream runs on the null stream, which is
-    the ROCm form of the default-stream bug.
+    A launch that reaches HIP on the null stream is the ROCm form of the
+    default-stream bug. hipify may rewrite ``kernel<<<...>>>(...)`` to
+    ``hipLaunchKernelGGL(...)`` or (newer HIP accepts the triple chevron) leave
+    it as is, and it may wrap the call across several lines; and it may or may
+    not rewrite ``getCurrentCUDAStream`` to ``getCurrentHIPStream...``. Accept
+    every combination -- what matters is that a real stream getter is passed,
+    not ``0``.
     """
     hipified = mapping.get('swin_window_process_kernel.cu')
     if hipified is None:
         return ['no hipified kernel source to inspect']
 
     text = open(hipified).read()
-    launches = re.findall(r'hipLaunchKernelGGL\((.*?)\n', text)
-    if not launches:
-        return ['no hipLaunchKernelGGL call found in the translated source']
+    calls = re.findall(r'hipLaunchKernelGGL\s*\((.*?)\)\s*;', text, re.DOTALL)
+    calls += re.findall(r'<<<(.*?)>>>', text, re.DOTALL)
+    if not calls:
+        return ['no kernel launch found in the translated source']
 
+    stream_getters = ('getCurrentHIPStream', 'getCurrentCUDAStream')
     failures = []
-    for launch in launches:
-        if 'getCurrentHIPStream' not in launch:
-            failures.append(f'launch without an explicit stream: {launch.strip()[:70]}')
-    print(f'\n{len(launches)} kernel launches, all carrying an explicit HIP stream'
-          if not failures else '')
+    for call in calls:
+        if not any(g in call for g in stream_getters):
+            failures.append('launch without an explicit stream: '
+                            + ' '.join(call.split())[:80])
+    if not failures:
+        print(f'\n{len(calls)} kernel launches, all carrying an explicit stream')
     return failures
 
 
