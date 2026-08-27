@@ -81,7 +81,9 @@ def reverse_pyt_forward(windows, shift, window, H, W):
 
 
 def leaf(tensor, requires_grad=True):
-    return tensor.clone().detach().requires_grad_(requires_grad).cuda()
+    # .cuda() must come before requires_grad_: moving a tensor that already
+    # requires grad makes the result a non-leaf, and .grad never populates on it.
+    return tensor.clone().detach().cuda().requires_grad_(requires_grad)
 
 
 def spatial(B, H, W, C, dtype):
