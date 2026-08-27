@@ -67,16 +67,18 @@ class TestModelParity(unittest.TestCase):
         )
         return model.cuda().eval()
 
-    def test_non_square_image(self):
+    def _assert_non_square_parity(self, img_size):
         """img_size is documented as `int | tuple(int)`, and a non-square one
         gives nH != nW inside the shifted blocks -- the configuration the row
         stride fix is about.
 
         For img_size=(256, 128) with window_size=8 the shifted blocks run at
-        64x32 and 32x16, so nH/nW are 8/4 and 4/2. Before the fix the merge
-        kernel indexes past the end of its input on both.
+        64x32 and 32x16, so nH/nW are 8/4 and 4/2; the transpose (128, 256)
+        gives nW > nH instead. Before the fix the merge kernel mis-indexes on
+        both -- out of bounds when nH > nW, silently wrong when nH < nW.
         """
-        model = self._model(img_size=(256, 128), window_size=8,
+        H, W = img_size
+        model = self._model(img_size=img_size, window_size=8,
                             depths=(2, 2, 2), num_heads=(3, 6, 12))
 
         shifted_non_square = [
@@ -89,7 +91,7 @@ class TestModelParity(unittest.TestCase):
         self.assertGreater(len(shifted_non_square), 0,
                            'this configuration must exercise nH != nW')
 
-        x = torch.randn(1, 3, 256, 128, device='cuda')
+        x = torch.randn(1, 3, H, W, device='cuda')
         with torch.no_grad():
             eager = model(x)
             set_fused(model, True)
@@ -97,6 +99,14 @@ class TestModelParity(unittest.TestCase):
             set_fused(model, False)
 
         self.assertTrue(torch.equal(eager, fused))
+
+    def test_non_square_image_tall(self):
+        """H > W: the shifted blocks hit nH > nW, the out-of-bounds case."""
+        self._assert_non_square_parity((256, 128))
+
+    def test_non_square_image_wide(self):
+        """W > H: the shifted blocks hit nH < nW, the silent-corruption case."""
+        self._assert_non_square_parity((128, 256))
 
     def test_forward_is_identical(self):
         model = self._model()

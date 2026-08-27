@@ -27,6 +27,8 @@ SHAPES = [
     (8, 16, 4, 4),     # nH=2, nW=4      wider than tall
     (8, 32, 4, 8),     # nH=2, nW=4      non-square window
     (32, 8, 8, 4),     # nH=4, nW=2      non-square window, taller than wide
+    (12, 8, 4, 4),     # nH=3, nW=2      coprime counts, both > 1
+    (12, 20, 4, 4),    # nH=3, nW=5      coprime counts, nH < nW
     (8, 8, 8, 8),      # nH == nW == 1   single window
     (12, 12, 4, 4),    # nH == nW == 3   odd window count
 ]
@@ -36,8 +38,9 @@ CHANNELS = 3
 
 
 def _shifts(window_h, window_w):
-    """The two shift regimes used by Swin: W-MSA (no shift) and SW-MSA (half window)."""
-    return [(0, 0), (window_h // 2, window_w // 2)]
+    """W-MSA (no shift), SW-MSA (half window), and an asymmetric shift_h != shift_w
+    that only the per-axis signature on this branch can express."""
+    return [(0, 0), (window_h // 2, window_w // 2), (1, 2)]
 
 
 def _make_spatial(B, H, W, C):
