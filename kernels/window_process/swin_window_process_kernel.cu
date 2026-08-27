@@ -23,14 +23,32 @@
 #include <cuda_fp16.h>
 #include <stdio.h>
 
+// Read-only cached load.
+//
+// CUDA accepts __ldg on every type the dispatch instantiates. HIP does not:
+// it has no __ldg overload for c10::Half, so the four kernels below fail to
+// compile under ROCm as written (float, double and c10::BFloat16 are fine --
+// c10::Half is the only one). The hint is advisory in both cases: it asks for
+// the read-only path and the compiler is free to ignore it, so dropping it on
+// AMD changes no result.
+//
+// This is a macro rather than an inline function on purpose: on NVIDIA it
+// expands to the same __ldg(ptr) token sequence as before, so the CUDA
+// translation unit is unchanged by this fix.
+#if defined(__HIP_PLATFORM_AMD__)
+#define SWIN_WP_LDG(ptr) (*(ptr))
+#else
+#define SWIN_WP_LDG(ptr) __ldg(ptr)
+#endif
+
 // Width of the block that walks the channel dimension.
 //
 // These kernels use no shared memory, no __syncthreads() and no warp-level
-// primitives, so this width affects occupancy only and never correctness. That
-// is also why they port to AMD unchanged: CDNA schedules 64-wide wavefronts
-// against NVIDIA's 32-wide warps, and nothing here depends on that width. All
-// three values below are multiples of 64, so neither platform is left running a
-// partial wave.
+// primitives, so this width affects occupancy only and never correctness. It is
+// also why the wavefront width is a non-issue on AMD: CDNA schedules 64-wide
+// wavefronts against NVIDIA's 32-wide warps, and nothing here depends on that
+// width. All three values below are multiples of 64, so neither platform is
+// left running a partial wave.
 //
 // The thresholds were tuned on NVIDIA and have not been measured on CDNA.
 // Compile with -DSWIN_WP_BLOCK_DIM=N to override them while tuning.
@@ -83,7 +101,7 @@ __global__ void roll_and_window_partition_forward_cuda_kernel(
             (blockIdx.z % (nH * nW) / nW * window_h + blockIdx.y - shift_h + H) % H * W * C +
             (blockIdx.z % nW * window_w + blockIdx.x - shift_w + W) % W * C +
             i;
-        output[offset] = (T)(__ldg(input + input_offset));
+        output[offset] = (T)(SWIN_WP_LDG(input + input_offset));
     }
 }
 
@@ -115,7 +133,7 @@ __global__ void roll_and_window_partition_backward_cuda_kernel(
         (blockIdx.y + shift_h + H ) % H % window_h * window_w * C +
         (blockIdx.x + shift_w + W ) % W % window_w * C +
         i;
-        grad_out[offset] = (T)(__ldg(grad_in + input_offset));
+        grad_out[offset] = (T)(SWIN_WP_LDG(grad_in + input_offset));
     }
 }
 
@@ -147,7 +165,7 @@ __global__ void window_merge_and_roll_forward_cuda_kernel(
             (blockIdx.y - shift_h + H) % H % window_h * window_w * C +
             (blockIdx.x - shift_w + W) % W % window_w * C +
             i;
-        output[offset] = (T)(__ldg(input + input_offset));
+        output[offset] = (T)(SWIN_WP_LDG(input + input_offset));
     }
 }
 
@@ -180,7 +198,7 @@ __global__ void window_merge_and_roll_backward_cuda_kernel(
         (blockIdx.z % (nH * nW) / nW * window_h + blockIdx.y + shift_h + H) % H * W * C +
         (blockIdx.z % nW * window_w + blockIdx.x + shift_w + W) % W * C +
         i;
-        grad_out[offset] = (T)(__ldg(grad_in + input_offset));
+        grad_out[offset] = (T)(SWIN_WP_LDG(grad_in + input_offset));
     }
 }
 
