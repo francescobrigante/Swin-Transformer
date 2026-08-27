@@ -33,6 +33,11 @@ except ImportError:                                  # timm missing, for instanc
     MODEL_AVAILABLE = False
 
 
+# The measured noise floor is one sample, so a gradient that is already
+# irreproducible is allowed a few multiples of it before the test calls it a
+# regression.
+NOISE_HEADROOM = 8
+
 requires_everything = unittest.skipIf(
     not (torch.cuda.is_available() and EXTENSION_AVAILABLE and MODEL_AVAILABLE),
     'requires a CUDA device, the compiled extension and an importable model')
@@ -123,6 +128,24 @@ class TestModelParity(unittest.TestCase):
         self.assertTrue(torch.equal(eager, fused))
 
     def test_gradients_are_identical(self):
+        """The fused path must not perturb a whole-model backward.
+
+        Bit-exactness of the four kernels themselves is asserted in
+        unit_test.py, where it holds for every dtype and shape. At model level
+        the bar has to account for the rest of the network: the backward of a
+        GEMM is not always reproducible run to run, because the library is free
+        to pick a different reduction split each time. On an MI300X one of the
+        63 gradients moves by ~2e-9 between two *identical* eager runs, so
+        asserting torch.equal against eager would fail without any fused kernel
+        being involved.
+
+        So the eager path is run twice first, and each gradient is held to what
+        that measurement licenses: bit-exactness wherever eager reproduces
+        itself, and no further from eager than eager is from itself elsewhere.
+        On a platform where the backward is fully deterministic -- CUDA, in
+        every run of this test so far -- every gradient takes the first branch
+        and this is exactly the strict comparison it replaces.
+        """
         model = self._model()
         x = torch.randn(2, 3, 56, 56, device='cuda')
         target = torch.randn(2, 10, device='cuda')
@@ -133,13 +156,28 @@ class TestModelParity(unittest.TestCase):
             return [p.grad.clone() for p in model.parameters() if p.grad is not None]
 
         eager = grads()
+        eager_again = grads()          # the platform's own run-to-run noise
         set_fused(model, True)
         fused = grads()
         set_fused(model, False)
 
         self.assertEqual(len(eager), len(fused))
-        for a, b in zip(eager, fused):
-            self.assertTrue(torch.equal(a, b))
+        reproducible = 0
+        for i, (a, a2, b) in enumerate(zip(eager, eager_again, fused)):
+            with self.subTest(parameter=i):
+                if torch.equal(a, a2):
+                    reproducible += 1
+                    self.assertTrue(torch.equal(a, b))
+                else:
+                    noise = (a - a2).abs().max().item()
+                    delta = (a - b).abs().max().item()
+                    self.assertLessEqual(
+                        delta, NOISE_HEADROOM * noise,
+                        f'gradient {i} moves {delta:.3e} with the fused path, '
+                        f'against {noise:.3e} between two eager runs')
+
+        # A platform that reproduces nothing would make this test vacuous.
+        self.assertGreater(reproducible, len(eager) // 2)
 
 
 if __name__ == '__main__':
