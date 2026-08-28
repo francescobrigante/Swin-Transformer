@@ -2,6 +2,7 @@
 # Fused kernel for window process for SwinTransformer
 # Copyright (c) 2022 Nvidia
 # Licensed under The MIT License [see LICENSE for details]
+# Written by Francesco Brigante
 # --------------------------------------------------------
 # End-to-end check: a SwinTransformer must produce identical output with and
 # without the fused window kernels. The kernels replace torch.roll plus

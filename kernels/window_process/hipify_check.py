@@ -2,6 +2,7 @@
 # Fused kernel for window process for SwinTransformer
 # Copyright (c) 2022 Nvidia
 # Licensed under The MIT License [see LICENSE for details]
+# Written by Francesco Brigante
 # --------------------------------------------------------
 # Verifies that the CUDA sources translate cleanly to HIP for ROCm.
 #
