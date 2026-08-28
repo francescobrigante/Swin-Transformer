@@ -6,12 +6,11 @@
 # Device-independent transcription of the index arithmetic used by the four
 # CUDA kernels in swin_window_process_kernel.cu.
 #
-# The kernels perform no arithmetic on the tensor values: every one of them is a
-# pure gather, and all of their logic lives in the computation of `input_offset`
-# from `blockIdx`. Transcribing that offset computation to vectorised PyTorch
-# therefore reproduces the kernels exactly, on any device, with no compiled
-# extension and no GPU. This makes the correctness of the index math testable in
-# CI without a GPU runner (see test_index_math.py).
+# The kernels perform no arithmetic on the tensor values: every one is a pure
+# gather, and all of their logic lives in computing `input_offset` from
+# `blockIdx`. Transcribing that computation to vectorised PyTorch therefore
+# reproduces the kernels exactly -- which is what makes them testable with no
+# compiled extension and no GPU, on a CI runner (see test_index_math.py).
 # --------------------------------------------------------
 
 import torch

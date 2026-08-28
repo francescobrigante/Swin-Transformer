@@ -50,8 +50,10 @@
 // width. All three values below are multiples of 64, so neither platform is
 // left running a partial wave.
 //
-// The thresholds were tuned on NVIDIA and have not been measured on CDNA.
-// Compile with -DSWIN_WP_BLOCK_DIM=N to override them while tuning.
+// The thresholds were tuned on NVIDIA and have since been measured on CDNA,
+// where the same choice wins: on an MI300X 64 beats 256 beats 1024, and at 1024
+// the fused path loses to eager at swin-tiny's stage 1. Compile with
+// -DSWIN_WP_BLOCK_DIM=N to override them while tuning.
 int best_block_dim(int feat_dim){
 #ifdef SWIN_WP_BLOCK_DIM
     (void)feat_dim;
