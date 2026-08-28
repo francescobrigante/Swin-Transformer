@@ -2,7 +2,6 @@
 # Fused kernel for window process for SwinTransformer
 # Copyright (c) 2022 Nvidia
 # Licensed under The MIT License [see LICENSE for details]
-# Written by Francesco Brigante
 # --------------------------------------------------------
 # Correctness tests for the index arithmetic of the fused window kernels.
 #
@@ -43,9 +42,13 @@ CHANNELS = 3
 
 
 def _shifts(window_h, window_w):
-    """W-MSA (no shift), SW-MSA (half window), and an asymmetric shift_h != shift_w
-    that only the per-axis signature on this branch can express."""
-    return [(0, 0), (window_h // 2, window_w // 2), (1, 2)]
+    """W-MSA (no shift), SW-MSA (half window), an asymmetric shift_h != shift_w
+    that only the per-axis signature on this branch can express, and the
+    negative form: models/swin_transformer.py calls the partition path with
+    -shift_size, so a suite that only ever passes positive shifts leaves the
+    sign the model actually uses untested."""
+    return [(0, 0), (window_h // 2, window_w // 2), (1, 2),
+            (-(window_h // 2), -(window_w // 2))]
 
 
 def _make_spatial(B, H, W, C):

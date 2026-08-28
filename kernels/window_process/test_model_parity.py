@@ -2,7 +2,6 @@
 # Fused kernel for window process for SwinTransformer
 # Copyright (c) 2022 Nvidia
 # Licensed under The MIT License [see LICENSE for details]
-# Written by Francesco Brigante
 # --------------------------------------------------------
 # End-to-end check: a SwinTransformer must produce identical output with and
 # without the fused window kernels. The kernels replace torch.roll plus
@@ -128,7 +127,9 @@ class TestModelParity(unittest.TestCase):
             fused = model(x)
             set_fused(model, False)
 
-        # The shifted blocks are the ones that take the fused path at all.
+        # set_fused counts every block carrying the flag, not just the shifted
+        # ones that route through the kernels. Zero would mean the model exposes
+        # no flag at all, and that the comparison below proved nothing.
         self.assertGreater(blocks, 0, 'no block exposes fused_window_process')
         self.assertTrue(torch.equal(eager, fused))
 

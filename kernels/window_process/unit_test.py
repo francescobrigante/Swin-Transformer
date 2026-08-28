@@ -43,6 +43,7 @@ SHAPES = [
     (2, 56, 56, 96, 7, 7),     # nH == nW == 8   the ImageNet configuration
     (2, 32, 16, 64, 8, 8),     # nH=4,  nW=2     out-of-bounds read before the fix
     (2, 16, 32, 64, 8, 8),     # nH=2,  nW=4     silent corruption before the fix
+    (2, 8, 32, 64, 8, 8),      # nH=1,  nW=4     one row of windows: hides the bug
     (2, 16, 64, 64, 4, 16),    # nH=4,  nW=4     non-square window
     (2, 64, 16, 64, 16, 4),    # nH=4,  nW=4     non-square window, transposed
     (2, 48, 48, 32, 6, 16),    # nH=8,  nW=3     square image, non-square window
@@ -57,7 +58,8 @@ SHAPES = [
     # ragged one where the last pass is partial.
     (2, 16, 16, 1, 8, 8),      # C < blockDim      64 threads, 63 idle
     (2, 16, 16, 64, 8, 8),     # C == blockDim     64 threads, one pass
-    (2, 16, 16, 100, 8, 8),    # C % blockDim != 0 64 threads, 2 passes, 36 wide
+    (2, 16, 64, 100, 4, 16),   # C % blockDim != 0 64 threads, 2 passes, 36 wide,
+                               #                   and a non-square window with it
     (2, 16, 16, 512, 8, 8),    # 384 <= C < 1024   128 threads, 4 exact passes
     (2, 16, 16, 1024, 8, 8),   # C >= 1024         256 threads, 4 exact passes
 ]
@@ -179,8 +181,12 @@ class TestWindowProcess(unittest.TestCase):
         """An upstream op can hand the backward a non-contiguous gradient.
 
         The C++ side asserts contiguity, so window_process.py normalises it.
+
+        The window is non-square on purpose: with 8x8 the transpose below is
+        shape-invariant, so this would pass even if the two window axes were
+        swapped somewhere along the path.
         """
-        B, H, W, C, window, shift = 2, 16, 16, 32, (8, 8), (4, 4)
+        B, H, W, C, window, shift = 2, 16, 16, 32, (4, 16), (2, 8)
         n = B * (H // window[0]) * (W // window[1])
         x = spatial(B, H, W, C, torch.float32)
         grad = torch.randn((n, window[1], window[0], C)).cuda().transpose(1, 2)
