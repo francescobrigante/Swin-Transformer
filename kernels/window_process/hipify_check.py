@@ -2,7 +2,6 @@
 # Fused kernel for window process for SwinTransformer
 # Copyright (c) 2022 Nvidia
 # Licensed under The MIT License [see LICENSE for details]
-# Written by Francesco Brigante
 # --------------------------------------------------------
 
 """Check that the CUDA sources translate cleanly to HIP for ROCm.
@@ -52,10 +51,11 @@ MUST_BE_TRANSLATED = [
 # PyTorch functions and macros that work on ROCm under either name. Some hipify
 # versions rename them to an at::hip / C10_HIP spelling and some leave the CUDA
 # spelling in place, which resolves to the HIP runtime anyway: torch 2.8 and 2.10
-# rewrite them, 2.13 does not. Both spellings reach the current HIP stream, so
-# the check makes no prediction and accepts either, reporting which one happened
-# -- which is why it passes unchanged on CI legs that resolve different torch
-# versions.
+# rewrite them, 2.12 and 2.13 do not. Both spellings reach the current HIP
+# stream -- the kept form is the one the MI300X build below actually compiled and
+# ran, on torch 2.12 -- so the check makes no prediction and accepts either,
+# reporting which one happened. That is why it passes unchanged on CI legs that
+# pin different torch versions.
 CUDA_COMPAT_SHIMS = [
     'at::cuda::getCurrentCUDAStream',
     'C10_CUDA_KERNEL_LAUNCH_CHECK',
@@ -67,7 +67,6 @@ CUDA_COMPAT_SHIMS = [
 # is a failure too.
 KNOWN_PORTABLE = [
     '__global__',
-    '__ldg',
     'blockIdx',
     'threadIdx',
     'blockDim',
@@ -76,6 +75,15 @@ KNOWN_PORTABLE = [
     'AT_DISPATCH_FLOATING_TYPES_AND2',
     'at::ScalarType::BFloat16',
 ]
+
+# __ldg is deliberately not in the list above. It is portable as a *symbol* --
+# HIP defines it, and hipify leaves it alone -- but not for every type, which is
+# the whole point of the caveat printed on success. Since the kernels read
+# through SWIN_WP_LDG, the only __ldg left in the source is inside the #else
+# branch of that macro, which hipcc never compiles: asserting that the token
+# survives translation would be asserting something about dead code. The macro
+# is reported instead, so the reader sees which arm the build will take.
+LDG_MACRO = 'SWIN_WP_LDG'
 
 # Printed on success, because passing this check proves less than it sounds like.
 SYMBOL_LEVEL_CAVEAT = """\
@@ -146,6 +154,10 @@ def report(staging, mapping, show_diff):
             how = 'rewritten' if token not in after else 'kept'
             print(f'  shim        {token}  ({how})')
 
+        if LDG_MACRO in before:
+            print(f'  macro       {LDG_MACRO}  '
+                  '(__ldg on NVIDIA, plain load on AMD -- see the note below)')
+
         portable = [t for t in KNOWN_PORTABLE if t in before]
         for token in portable:
             if token in after:
@@ -153,7 +165,8 @@ def report(staging, mapping, show_diff):
             else:
                 failures.append(f'{name}: {token} was rewritten but should be portable')
 
-        if not translated and not survived and not shims and not portable:
+        if not translated and not survived and not shims and not portable \
+                and LDG_MACRO not in before:
             print('  nothing device specific in this file')
 
         if show_diff:
