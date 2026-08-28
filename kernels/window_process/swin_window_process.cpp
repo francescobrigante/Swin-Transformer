@@ -87,7 +87,11 @@ at::Tensor window_merge_and_roll_backward_cuda(
 // out-of-bounds one, with no error raised at any point. The grid bounds catch a
 // launch that used to fail asynchronously somewhere else, leaving the output
 // uninitialised. The shift bound is neither: the formula stays correct for
-// |shift| >= window, which is simply a larger roll. It is here because it is the
+// window <= |shift| <= H (and <= W on the other axis), which is simply a larger
+// roll. Past that the `+ H` no longer keeps the operand of `%` non-negative,
+// and since the block index is unsigned the expression wraps modulo 2^32 rather
+// than going negative -- `% H` still yields an in-range index, so the read is
+// silently wrong rather than out of bounds. The bound is here because it is the
 // contract the model already documents (`0 <= shift_size < window_size` in
 // models/swin_transformer.py), made explicit at the boundary.
 static void check_window_args(

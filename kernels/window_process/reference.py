@@ -11,6 +11,15 @@
 # `blockIdx`. Transcribing that computation to vectorised PyTorch therefore
 # reproduces the kernels exactly -- which is what makes them testable with no
 # compiled extension and no GPU, on a CI runner (see test_index_math.py).
+#
+# Exactly, but not unconditionally. Python's % and // floor, C++'s truncate, and
+# in the kernels the expression is unsigned as well, so it wraps modulo 2^32
+# where this file would carry a negative value through. The two agree for as
+# long as the operand of every % stays non-negative, which the `+ H` and `+ W`
+# terms guarantee while |shift| <= H and |shift| <= W -- a wider range than the
+# launcher's TORCH_CHECKs admit, so inside the supported domain the two are the
+# same arithmetic. Outside it they are not, and this file is the more forgiving
+# of the two.
 # --------------------------------------------------------
 
 import torch
