@@ -47,6 +47,7 @@ why the call sites pass `-shift_size` forward and `+shift_size` back.
 | dtype | float64, float32, float16, bfloat16 |
 | layout | contiguous, channels last in memory: `(..., C)` |
 | tiling | `H % window_h == 0` and `W % window_w == 0` |
+| shape | `tensor.numel() == B * H * W * C` |
 | shift | `abs(shift) < window size`, per axis |
 | size | `B * H * W * C < 2^31` — offsets are computed in `int` |
 | grid | `B * nH * nW <= 65535` and `H <= 65535` — CUDA `grid.z` and `grid.y` |
@@ -55,12 +56,15 @@ Shape, tiling, shift and size are checked with `TORCH_CHECK` before the launch;
 device and contiguity by `CHECK_INPUT`. The channel-last layout is the shape
 contract itself and is not separately verified.
 
-Three of these are new guards over what was previously undetected: violating the
-tiling or size rules used to read the wrong element, or read out of bounds, with
-no error raised anywhere, and exceeding the grid bounds used to fail the launch
-asynchronously somewhere else. The `shift` row is different — the kernels
-compute a larger roll correctly — and is enforced because it is the contract the
-model already documents, not because it used to break. dtype and layout were
+Four of these are new guards over what was previously undetected: violating the
+tiling, shape or size rules used to read the wrong element, or read out of
+bounds, with no error raised anywhere, and exceeding the grid bounds used to
+fail the launch asynchronously somewhere else. The `shift` row is different —
+the kernels compute a larger roll correctly, for `window <= |shift| <= H` per
+axis, and past that the operand of the modulo stops being non-negative and wraps
+into a silently wrong read rather than an out-of-bounds one. It is enforced
+because it is the contract the model already documents, not because it used to
+break. dtype and layout were
 already reported by the dispatch and by `CHECK_CONTIGUOUS`.
 
 Note that `nH != nW` follows from `H != W` alone: with a square window,
@@ -88,8 +92,9 @@ python benchmark.py --iters 200
 The first two run in CI on a CPU runner, on every push that touches this
 directory. `unit_test.py` and `test_model_parity.py` are executed there too, but
 only to confirm they skip cleanly rather than error; `benchmark.py` is not, since
-it exits non-zero without a device. The two CI legs install different torch
-versions, so both hipify behaviours are exercised.
+it exits non-zero without a device. The two CI legs pin different torch
+versions, one that rewrites the stream getter and one that does not, so both
+hipify behaviours are exercised on every run.
 
 The kernels perform no arithmetic on the values, only gathers, so parity is
 asserted with `torch.equal` on every dtype including float16 and bfloat16: any
@@ -99,7 +104,10 @@ deviation is an indexing error rather than a rounding one. For the same reason
 `reference.py` transcribes the kernels' `input_offset` computation to vectorised
 PyTorch. That is not an approximation of the kernels — the offset computation is
 their entire logic — which is what makes them testable on a CPU, with no
-compiled extension and no GPU of either vendor.
+compiled extension and no GPU of either vendor. The two agree wherever the
+operand of a modulo stays non-negative, which every input the launcher accepts
+guarantees; outside that domain Python floors where the kernel wraps, and the
+transcription is the more forgiving of the two.
 
 ## Validation
 
@@ -109,7 +117,8 @@ Parity is asserted against the eager path on an **RTX 3080** (torch
 both, bit-exact, over square and non-square images and windows including
 coprime `nH`/`nW`. `compute-sanitizer` (memcheck, initcheck, synccheck) is clean
 on the RTX 3080 across all four kernels, forward and backward; ROCm has no
-equivalent run.
+equivalent run. The MI300X run covers all 15 shapes in `unit_test.py`; two of
+them were added after the RTX 3080 run and have not been executed on NVIDIA.
 
 ## Performance
 
@@ -184,15 +193,29 @@ Two things are worth knowing before building:
   `/opt/rocm` tree, and those wheels carry no rocThrust, hipSPARSE, hipBLAS,
   hipBLASLt or hipSOLVER headers — which torch's own headers include when
   compiling device code. In that state *no* PyTorch HIP extension compiles; a
-  file whose only content is `#include <ATen/ATen.h>` fails the same way.
-  Installing the matching dev packages is enough, and touches no source:
+  file whose only content is `#include <ATen/ATen.h>` fails the same way. One
+  dev metapackage supplies all of them, and touches no source:
 
   ```bash
-  apt-get install -y amdrocm-blas-dev7.14 amdrocm-hipblas-common-dev7.14 \
-                     amdrocm-sparse-dev7.14 amdrocm-solver-dev7.14 \
-                     librocthrust-dev librocprim-dev
-  export CPLUS_INCLUDE_PATH=/opt/rocm/core-7.14/include:/usr/include
+  # AMD's Developer Cloud host has this repo configured already; inside the
+  # container, reuse its keyring and point apt at the same source.
+  echo 'deb [arch=amd64 signed-by=/etc/apt/keyrings/amdrocm.gpg] https://repo.amd.com/rocm/packages-multi-arch/ubuntu2404 stable main' \
+       > /etc/apt/sources.list.d/rocm.list
+  apt-get update && apt-get install -y amdrocm-core-dev7.14
+  export CPLUS_INCLUDE_PATH=/opt/rocm/core-7.14/include
+  export LIBRARY_PATH=/opt/rocm/core-7.14/lib
   ```
+
+  `LIBRARY_PATH` is separate from the headers: the image ships
+  `libamdhip64.so.7` with no development symlink, so the final link cannot
+  resolve `-lamdhip64` without it. Two near misses are worth naming, because
+  both fail far from their cause. Do not append `/usr/include` to
+  `CPLUS_INCLUDE_PATH` — searching it ahead of the compiler's own directories
+  defeats libstdc++'s `#include_next`, and the build dies on `stdlib.h: No such
+  file or directory` before it reaches a single ROCm header. And do not reach
+  for Ubuntu's `librocthrust-dev` / `librocprim-dev`: they are ROCm 5.7, and
+  they install a 5.7 HIP into `/usr/include` that shadows the image's 7.14
+  headers, producing a wall of errors inside `amd_warp_sync_functions.h`.
 
 ### Portability
 
@@ -224,6 +247,8 @@ The one substantive difference between the two platforms is the launch stream.
 Upstream passes `0`, the null stream; this version passes
 `at::cuda::getCurrentCUDAStream()`. Some hipify versions rewrite that to the HIP
 spelling and some leave it, which resolves to the HIP runtime anyway — both
-reach the current stream. `hipify_check.py` makes no prediction about which:
-it reports the one that happened rather than requiring either, prints
-the full symbol mapping, and fails if anything is left untranslated.
+reach the current stream. torch 2.8 and 2.10 rewrite it; 2.12 and 2.13 leave it,
+and 2.12 is the version the MI300X build used, so the kept spelling is the one
+that compiled under hipcc and ran bit-exact above. `hipify_check.py` still makes
+no prediction: it reports the one that happened rather than requiring either,
+prints the full symbol mapping, and fails if anything is left untranslated.
