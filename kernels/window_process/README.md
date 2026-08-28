@@ -113,12 +113,13 @@ transcription is the more forgiving of the two.
 
 Parity is asserted against the eager path on an **RTX 3080** (torch
 `2.8.0+cu129`, CUDA 12.9) and an **AMD Instinct MI300X** (gfx942, torch
-`2.12.0+rocm7.14.0`): `unit_test.py` 15/15 and `test_model_parity.py` 4/4 on
-both, bit-exact, over square and non-square images and windows including
-coprime `nH`/`nW`. `compute-sanitizer` (memcheck, initcheck, synccheck) is clean
-on the RTX 3080 across all four kernels, forward and backward; ROCm has no
-equivalent run. The MI300X run covers all 15 shapes in `unit_test.py`; two of
-them were added after the RTX 3080 run and have not been executed on NVIDIA.
+`2.12.0+rocm7.14.0`): `unit_test.py` 15/15 test methods and
+`test_model_parity.py` 4/4 on both, bit-exact, over square and non-square
+images and windows including coprime `nH`/`nW`. `compute-sanitizer` (memcheck,
+initcheck, synccheck) is clean on the RTX 3080 across all four kernels, forward
+and backward; ROCm has no equivalent run. The MI300X run covers all 15 entries
+in `unit_test.py`'s shape list; two of them were added after the RTX 3080 run
+and have not been executed on NVIDIA.
 
 ## Performance
 
@@ -176,6 +177,10 @@ from `PYTORCH_ROCM_ARCH`:
 PYTORCH_ROCM_ARCH=gfx942 python setup.py install
 ```
 
+On AMD's ROCm 7.14 images that command fails until the SDK headers are in
+place; the second bullet below has the two `export`s and the one package it
+needs, and they have to come first.
+
 Do not pass `--offload-arch` through `extra_compile_args`: PyTorch's
 `_get_rocm_arch_flags()` skips its own detection as soon as it sees one, which
 pins the build to a single GPU.
@@ -197,8 +202,11 @@ Two things are worth knowing before building:
   dev metapackage supplies all of them, and touches no source:
 
   ```bash
-  # AMD's Developer Cloud host has this repo configured already; inside the
-  # container, reuse its keyring and point apt at the same source.
+  # Assumes AMD's Developer Cloud image, whose host already carries this repo's
+  # signing key at /etc/apt/keyrings/amdrocm.gpg -- copy it into the container.
+  # Anywhere else, install AMD's key under that path first: repo.amd.com serves
+  # none over HTTP, and the repo.radeon.com key signs a different repository, so
+  # apt-get update fails with NO_PUBKEY without it.
   echo 'deb [arch=amd64 signed-by=/etc/apt/keyrings/amdrocm.gpg] https://repo.amd.com/rocm/packages-multi-arch/ubuntu2404 stable main' \
        > /etc/apt/sources.list.d/rocm.list
   apt-get update && apt-get install -y amdrocm-core-dev7.14

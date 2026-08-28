@@ -167,7 +167,7 @@ def report(staging, mapping, show_diff):
 
         if not translated and not survived and not shims and not portable \
                 and LDG_MACRO not in before:
-            print('  nothing device specific in this file')
+            print('  no symbol from the watch lists appears in this file')
 
         if show_diff:
             diff = difflib.unified_diff(
