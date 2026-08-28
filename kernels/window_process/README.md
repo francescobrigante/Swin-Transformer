@@ -88,8 +88,8 @@ python benchmark.py --iters 200
 The first two run in CI on a CPU runner, on every push that touches this
 directory. `unit_test.py` and `test_model_parity.py` are executed there too, but
 only to confirm they skip cleanly rather than error; `benchmark.py` is not, since
-it exits non-zero without a device. The two CI legs install torch 2.8 and 2.13,
-so the checks are exercised against both.
+it exits non-zero without a device. The two CI legs install different torch
+versions, so both hipify behaviours are exercised.
 
 The kernels perform no arithmetic on the values, only gathers, so parity is
 asserted with `torch.equal` on every dtype including float16 and bfloat16: any
@@ -224,6 +224,6 @@ The one substantive difference between the two platforms is the launch stream.
 Upstream passes `0`, the null stream; this version passes
 `at::cuda::getCurrentCUDAStream()`. Some hipify versions rewrite that to the HIP
 spelling and some leave it, which resolves to the HIP runtime anyway — both
-reach the current stream, and the behaviour does not follow the version order.
-`hipify_check.py` reports which one happened rather than requiring either, prints
+reach the current stream. `hipify_check.py` makes no prediction about which:
+it reports the one that happened rather than requiring either, prints
 the full symbol mapping, and fails if anything is left untranslated.

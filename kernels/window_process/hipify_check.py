@@ -51,11 +51,11 @@ MUST_BE_TRANSLATED = [
 
 # PyTorch functions and macros that work on ROCm under either name. Some hipify
 # versions rename them to an at::hip / C10_HIP spelling and some leave the CUDA
-# spelling in place, which resolves to the HIP runtime anyway; the behaviour does
-# not follow the version order, so this makes no prediction about it. Both
-# spellings reach the current HIP stream, so the check reports which one happened
-# rather than requiring either -- which is why both CI legs pass unchanged while
-# installing torch 2.8 and 2.13 respectively.
+# spelling in place, which resolves to the HIP runtime anyway: torch 2.8 and 2.10
+# rewrite them, 2.13 does not. Both spellings reach the current HIP stream, so
+# the check makes no prediction and accepts either, reporting which one happened
+# -- which is why it passes unchanged on CI legs that resolve different torch
+# versions.
 CUDA_COMPAT_SHIMS = [
     'at::cuda::getCurrentCUDAStream',
     'C10_CUDA_KERNEL_LAUNCH_CHECK',
