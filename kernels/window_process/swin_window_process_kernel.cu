@@ -23,21 +23,17 @@
 #include <cuda_fp16.h>
 #include <stdio.h>
 
-// Read-only cached load.
+// Read-only cached load: __ldg on NVIDIA, a plain load on AMD.
 //
-// __ldg is defined for every type the dispatch instantiates only under CUDA.
-// float and double come from the toolkit; c10::Half and c10::BFloat16 come from
-// PyTorch, and the two are not guarded alike. In torch/headeronly/util, the
-// BFloat16 overload is behind `__CUDACC__ || __HIPCC__` and degrades to *ptr on
-// ROCm, while the Half overload is behind `__CUDA_ARCH__ || __CUDA__` and so
-// does not exist under hipcc at all. c10::Half is therefore the one type that
-// fails to compile under ROCm as written. The hint is advisory in both cases:
-// it asks for the read-only path and the compiler is free to ignore it, so
-// dropping it on AMD changes no result.
-//
-// This is a macro rather than an inline function on purpose: on NVIDIA it
-// expands to the same __ldg(ptr) token sequence as before, so the CUDA
-// translation unit is unchanged by this fix.
+// __ldg covers every dispatched type only under CUDA. c10::Half and
+// c10::BFloat16 come from torch/headeronly/util and are not guarded alike:
+// BFloat16 sits behind `__CUDACC__ || __HIPCC__` and degrades to *ptr on ROCm,
+// Half behind `(__CUDA_ARCH__ >= 350) || (__clang__ && __CUDA__)`, which no
+// hipcc build satisfies. Half is in the dispatch, so this file does not compile
+// under ROCm as written. The hint is advisory in both languages -- it asks for
+// the read-only path and may be ignored -- so dropping it on AMD changes no
+// result. A macro rather than an inline function so that the NVIDIA build still
+// sees the same __ldg(ptr) tokens as before.
 #if defined(__HIP_PLATFORM_AMD__)
 #define SWIN_WP_LDG(ptr) (*(ptr))
 #else
@@ -46,19 +42,17 @@
 
 // Width of the block that walks the channel dimension.
 //
-// These kernels use no shared memory, no __syncthreads() and no warp-level
-// primitives, so this width affects occupancy only and never correctness. It is
-// also why the wavefront width is a non-issue on AMD: CDNA schedules 64-wide
-// wavefronts against NVIDIA's 32-wide warps, and nothing here depends on that
-// width. All three values below are multiples of 64, so neither platform is
-// left running a partial wave.
+// No shared memory, no __syncthreads(), no warp-level primitives: this width
+// affects occupancy only, never correctness, and nothing here depends on the
+// warp or wavefront width -- CDNA's 64 against NVIDIA's 32 is immaterial. All
+// three values below are multiples of 64, so neither platform runs a partial
+// wave.
 //
-// The thresholds were tuned on NVIDIA. On CDNA the width this heuristic picks
-// at swin-tiny's C -- 64, for both stage 1 and stage 2 -- was measured to be the
-// right one: on an MI300X 64 beats 256 beats 1024, and at 1024 the fused path
-// loses to eager at stage 1. Both those configurations fall in the first branch,
-// so the 384 and 1024 thresholds themselves remain NVIDIA-tuned. Compile with
-// -DSWIN_WP_BLOCK_DIM=N to override them while tuning.
+// The thresholds are NVIDIA-tuned. What CDNA confirms is the width they pick at
+// swin-tiny's C, 64 at both stages: on an MI300X 64 beats 256 beats 1024, and
+// at 1024 the fused path loses to eager. Both stages land in the first branch,
+// so the 384 and 1024 thresholds themselves remain untested there. Override
+// with -DSWIN_WP_BLOCK_DIM=N.
 int best_block_dim(int feat_dim){
 #ifdef SWIN_WP_BLOCK_DIM
     (void)feat_dim;
@@ -81,12 +75,11 @@ int best_block_dim(int feat_dim){
 }
 
 
-// The four kernels below are pure gathers: the whole of each one is the
-// input_offset it computes. reference.py transcribes those four expressions to
-// PyTorch so they can be tested on a CPU, but nothing binds the two files --
-// only a build checks this source. If you change the arithmetic here, change
-// reference.py to match, or test_index_math.py will go on passing against the
-// old formula.
+// The four kernels below are pure gathers: each one *is* the input_offset it
+// computes. reference.py transcribes those expressions to PyTorch so they can
+// be tested on a CPU. Nothing binds the two files -- only a build checks this
+// source -- so if you change the arithmetic here, change reference.py too, or
+// test_index_math.py will go on passing against the old formula.
 
 // input:  [B, H, W, C]
 // output: [B*nH*nW, window_h, window_w, C]
