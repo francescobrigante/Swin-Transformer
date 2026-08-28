@@ -15,9 +15,10 @@ sources -- but it gives no signal about whether the translation came out
 complete. This is that signal, and because hipify is pure Python it can be had
 with no AMD GPU (with no GPU at all) on a CPU runner in CI.
 
-Two things fail the check: a CUDA-only header that survives translation, and a
-kernel launch that reaches HIP without an explicit stream. Everything hipify
-leaves untouched is reported, not failed.
+Three things fail the check: a CUDA-only header that survives translation, a
+name that is already portable but gets rewritten anyway, and a kernel launch
+that reaches HIP without naming a stream. Symbols that translate, and the two
+PyTorch spellings that are valid either way, are reported rather than judged.
 
     python hipify_check.py            # verify
     python hipify_check.py --diff     # verify, and print the generated HIP
@@ -41,17 +42,20 @@ SOURCES = ['swin_window_process.cpp', 'swin_window_process_kernel.cu']
 # hip/hip_runtime.h, and so on. If one of these names is still there afterwards,
 # the ROCm build stops at "no such file", so finding one is a failure.
 MUST_BE_TRANSLATED = [
+    'cuda.h',
     'cuda_runtime.h',
     'cuda_fp16.h',
     'ATen/cuda/CUDAContext.h',
     'c10/cuda/CUDAException.h',
 ]
 
-# PyTorch functions and macros that work on ROCm under either name. Older hipify
-# renamed them to an at::hip / C10_HIP spelling; torch >= 2.9 leaves them alone,
-# because ROCm now ships compatibility headers under which the CUDA spelling
-# already resolves to the HIP runtime. Both are correct, so this only reports
-# which one happened.
+# PyTorch functions and macros that work on ROCm under either name. Some hipify
+# versions rename them to an at::hip / C10_HIP spelling and some leave the CUDA
+# spelling in place, which resolves to the HIP runtime anyway; the behaviour does
+# not follow the version order, so this makes no prediction about it. Both
+# spellings reach the current HIP stream, so the check reports which one happened
+# rather than requiring either -- which is why both CI legs pass unchanged while
+# installing torch 2.8 and 2.13 respectively.
 CUDA_COMPAT_SHIMS = [
     'at::cuda::getCurrentCUDAStream',
     'C10_CUDA_KERNEL_LAUNCH_CHECK',
@@ -139,8 +143,7 @@ def report(staging, mapping, show_diff):
 
         shims = [t for t in CUDA_COMPAT_SHIMS if t in before]
         for token in shims:
-            how = ('rewritten' if token not in after
-                   else 'kept (resolves via the CUDA-compat headers)')
+            how = 'rewritten' if token not in after else 'kept'
             print(f'  shim        {token}  ({how})')
 
         portable = [t for t in KNOWN_PORTABLE if t in before]
@@ -150,7 +153,7 @@ def report(staging, mapping, show_diff):
             else:
                 failures.append(f'{name}: {token} was rewritten but should be portable')
 
-        if not translated and not shims and not portable:
+        if not translated and not survived and not shims and not portable:
             print('  nothing device specific in this file')
 
         if show_diff:
@@ -169,9 +172,11 @@ def check_launch_form(mapping):
     default-stream bug.
 
     The spelling of a launch is not fixed, so this accepts all of it: hipify may
-    turn the triple chevron into hipLaunchKernelGGL or leave it alone, may wrap
-    the call over several lines, and may or may not rename getCurrentCUDAStream.
-    Only one thing is rejected -- a literal 0 where the stream belongs.
+    turn the triple chevron into hipLaunchKernelGGL or leave it alone, and may
+    wrap the call over several lines. What it requires is narrow and textual: the
+    launch must name a current-stream getter under either spelling. A launch
+    handed a stream by any other route -- a variable, getStreamFromPool() -- is
+    rejected too, which is strict rather than wrong for this source.
     """
     hipified = mapping.get('swin_window_process_kernel.cu')
     if hipified is None:

@@ -25,12 +25,15 @@
 
 // Read-only cached load.
 //
-// CUDA accepts __ldg on every type the dispatch instantiates. HIP does not:
-// it has no __ldg overload for c10::Half, so the four kernels below fail to
-// compile under ROCm as written (float, double and c10::BFloat16 are fine --
-// c10::Half is the only one). The hint is advisory in both cases: it asks for
-// the read-only path and the compiler is free to ignore it, so dropping it on
-// AMD changes no result.
+// __ldg is defined for every type the dispatch instantiates only under CUDA.
+// float and double come from the toolkit; c10::Half and c10::BFloat16 come from
+// PyTorch, and the two are not guarded alike. In torch/headeronly/util, the
+// BFloat16 overload is behind `__CUDACC__ || __HIPCC__` and degrades to *ptr on
+// ROCm, while the Half overload is behind `__CUDA_ARCH__ || __CUDA__` and so
+// does not exist under hipcc at all. c10::Half is therefore the one type that
+// fails to compile under ROCm as written. The hint is advisory in both cases:
+// it asks for the read-only path and the compiler is free to ignore it, so
+// dropping it on AMD changes no result.
 //
 // This is a macro rather than an inline function on purpose: on NVIDIA it
 // expands to the same __ldg(ptr) token sequence as before, so the CUDA
@@ -50,9 +53,11 @@
 // width. All three values below are multiples of 64, so neither platform is
 // left running a partial wave.
 //
-// The thresholds were tuned on NVIDIA and have since been measured on CDNA,
-// where the same choice wins: on an MI300X 64 beats 256 beats 1024, and at 1024
-// the fused path loses to eager at swin-tiny's stage 1. Compile with
+// The thresholds were tuned on NVIDIA. On CDNA the width this heuristic picks
+// at swin-tiny's C -- 64, for both stage 1 and stage 2 -- was measured to be the
+// right one: on an MI300X 64 beats 256 beats 1024, and at 1024 the fused path
+// loses to eager at stage 1. Both those configurations fall in the first branch,
+// so the 384 and 1024 thresholds themselves remain NVIDIA-tuned. Compile with
 // -DSWIN_WP_BLOCK_DIM=N to override them while tuning.
 int best_block_dim(int feat_dim){
 #ifdef SWIN_WP_BLOCK_DIM
@@ -75,6 +80,13 @@ int best_block_dim(int feat_dim){
 #endif
 }
 
+
+// The four kernels below are pure gathers: the whole of each one is the
+// input_offset it computes. reference.py transcribes those four expressions to
+// PyTorch so they can be tested on a CPU, but nothing binds the two files --
+// only a build checks this source. If you change the arithmetic here, change
+// reference.py to match, or test_index_math.py will go on passing against the
+// old formula.
 
 // input:  [B, H, W, C]
 // output: [B*nH*nW, window_h, window_w, C]

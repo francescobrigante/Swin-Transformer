@@ -10,7 +10,7 @@
 # extension, so they can gate the index math in CI. The GPU parity tests for the
 # compiled kernels live in unit_test.py.
 #
-#   python -m unittest kernels.window_process.test_index_math -v
+#   python test_index_math.py
 # --------------------------------------------------------
 
 import unittest
@@ -33,6 +33,9 @@ SHAPES = [
     (12, 20, 4, 4),    # nH=3, nW=5      coprime counts, nH < nW
     (8, 8, 8, 8),      # nH == nW == 1   single window
     (12, 12, 4, 4),    # nH == nW == 3   odd window count
+    (16, 32, 4, 8),    # nH == nW == 4   square grid, non-square window
+    (4, 16, 4, 4),     # nH=1, nW=4      one row of windows: the bug hides here
+    (16, 4, 4, 4),     # nH=4, nW=1      one column of windows: it does not
 ]
 
 BATCH = 2
@@ -165,8 +168,8 @@ class TestUpstreamRowStrideBug(unittest.TestCase):
         checked = 0
         for H, W, wh, ww in SHAPES:
             nH, nW = H // wh, W // ww
-            if nH >= nW:
-                continue
+            if nH >= nW or nH == 1:
+                continue           # nH == 1 hides the bug -- covered separately
             for sh, sw in _shifts(wh, ww):
                 with self.subTest(H=H, W=W, wh=wh, ww=ww, shift=(sh, sw), nH=nH, nW=nW):
                     numel = BATCH * nH * nW * wh * ww
@@ -180,6 +183,34 @@ class TestUpstreamRowStrideBug(unittest.TestCase):
                     self.assertFalse(torch.equal(legacy, want))
                     checked += 1
         self.assertGreater(checked, 0, "no nH < nW shape exercised")
+
+    def test_legacy_is_invisible_when_nH_is_one(self):
+        """A single row of windows hides the bug entirely; a single column does not.
+
+        The legacy term is `src_y / window_h * nH`, and `src_y / window_h` runs
+        over [0, nH). At nH == 1 it is always 0, so the wrong stride is never
+        multiplied by anything and the result is bit-identical to the correct
+        one -- even though nH != nW and the grid is as non-square as it gets.
+        The transpose has no such reprieve: nW == 1 with nH > 1 is the
+        out-of-bounds case, asserted above.
+
+        This is why H != W is not on its own enough to reproduce the bug, and
+        why the shape list has to contain both orientations.
+        """
+        checked = 0
+        for H, W, wh, ww in SHAPES:
+            nH, nW = H // wh, W // ww
+            if nH != 1 or nW == 1:
+                continue
+            for sh, sw in _shifts(wh, ww):
+                with self.subTest(H=H, W=W, wh=wh, ww=ww, shift=(sh, sw), nH=nH, nW=nW):
+                    x = _make_windows(BATCH, H, W, CHANNELS, wh, ww)
+                    want = ref.window_merge_and_roll_forward(x, (sh, sw), (wh, ww), H, W)
+                    legacy = ref.window_merge_and_roll_forward(
+                        x, (sh, sw), (wh, ww), H, W, legacy_row_stride=True)
+                    self.assertTrue(torch.equal(legacy, want))
+                    checked += 1
+        self.assertGreater(checked, 0, "no nH == 1 < nW shape exercised")
 
 
 class TestIntraWindowModuloIsEquivalent(unittest.TestCase):

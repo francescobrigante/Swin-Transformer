@@ -53,11 +53,13 @@ SHAPES = [
     # < 1024 -> 128, otherwise 256. All three branches must be exercised, and C
     # must be smaller than, equal to and larger than the block width so that the
     # strided `for (i = threadIdx.x; i < C; i += blockDim.x)` loop is covered in
-    # its partial, exact and multi-pass forms.
+    # all four of its forms: no full pass, exactly one, an exact number, and a
+    # ragged one where the last pass is partial.
     (2, 16, 16, 1, 8, 8),      # C < blockDim      64 threads, 63 idle
     (2, 16, 16, 64, 8, 8),     # C == blockDim     64 threads, one pass
-    (2, 16, 16, 512, 8, 8),    # 384 <= C < 1024   128 threads
-    (2, 16, 16, 1024, 8, 8),   # C >= 1024         256 threads
+    (2, 16, 16, 100, 8, 8),    # C % blockDim != 0 64 threads, 2 passes, 36 wide
+    (2, 16, 16, 512, 8, 8),    # 384 <= C < 1024   128 threads, 4 exact passes
+    (2, 16, 16, 1024, 8, 8),   # C >= 1024         256 threads, 4 exact passes
 ]
 
 

@@ -53,8 +53,15 @@ why the call sites pass `-shift_size` forward and `+shift_size` back.
 
 Shape, tiling, shift and size are checked with `TORCH_CHECK` before the launch;
 device and contiguity by `CHECK_INPUT`. The channel-last layout is the shape
-contract itself and is not separately verified. Violating any of them used to
-read the wrong element, or read out of bounds, with no error at all.
+contract itself and is not separately verified.
+
+Three of these are new guards over what was previously undetected: violating the
+tiling or size rules used to read the wrong element, or read out of bounds, with
+no error raised anywhere, and exceeding the grid bounds used to fail the launch
+asynchronously somewhere else. The `shift` row is different — the kernels
+compute a larger roll correctly — and is enforced because it is the contract the
+model already documents, not because it used to break. dtype and layout were
+already reported by the dispatch and by `CHECK_CONTIGUOUS`.
 
 Note that `nH != nW` follows from `H != W` alone: with a square window,
 `nH = H / window_size` and `nW = W / window_size`. A non-square window is not
@@ -75,11 +82,14 @@ python test_index_math.py      # runs anywhere
 python hipify_check.py         # runs anywhere
 python unit_test.py            # skips without a GPU or the built extension
 python test_model_parity.py
-python benchmark.py
+python benchmark.py --iters 200
 ```
 
-The first two run in CI on every push, on a CPU runner. The GPU ones are
-executed there too, but only to confirm they skip cleanly rather than error.
+The first two run in CI on a CPU runner, on every push that touches this
+directory. `unit_test.py` and `test_model_parity.py` are executed there too, but
+only to confirm they skip cleanly rather than error; `benchmark.py` is not, since
+it exits non-zero without a device. The two CI legs install torch 2.8 and 2.13,
+so the checks are exercised against both.
 
 The kernels perform no arithmetic on the values, only gathers, so parity is
 asserted with `torch.equal` on every dtype including float16 and bfloat16: any
@@ -104,9 +114,10 @@ equivalent run.
 ## Performance
 
 `benchmark.py`, forward + backward, batch 192, 200 iterations after 10 warm-up.
-The `partition` direction is shown; `merge` tracks it within 6% at every point
-on the RTX 3080 and within 1% on the MI300X. `benchmark.py` prints the full
-matrix, both directions and all four configurations.
+The `partition` direction is shown. The `merge` direction's fused time tracks it
+within 6% at the configurations listed here on the RTX 3080, and within 1% at
+every point of the full matrix on the MI300X. `benchmark.py` prints that matrix,
+both directions and all four configurations.
 
 **RTX 3080 (10 GB)**
 
@@ -191,8 +202,10 @@ wavefront against NVIDIA's 32-wide warp affects occupancy and nothing else. The
 three block widths in `best_block_dim()` are multiples of 64, so neither
 platform schedules a partial wave.
 
-Those thresholds were tuned on NVIDIA, then measured on CDNA by rebuilding with
-`-DSWIN_WP_BLOCK_DIM=N` (stage 1 / stage 2, float32, MI300X, fused time):
+Those thresholds were tuned on NVIDIA. What was measured on CDNA is the width
+the heuristic actually picks at swin-tiny's `C` — 64 at both stages, since 96 and
+192 are below the first threshold — by rebuilding with `-DSWIN_WP_BLOCK_DIM=N`
+(stage 1 / stage 2, float32, MI300X, fused time):
 
 | block width | stage 1 | stage 2 |
 |---|---:|---:|
@@ -201,12 +214,16 @@ Those thresholds were tuned on NVIDIA, then measured on CDNA by rebuilding with
 | 1024 | 1.230 ms | 0.326 ms |
 
 The NVIDIA-tuned choice wins on CDNA too, and widening hurts monotonically — at
-1024 the fused path becomes *slower than eager* (0.74×). The grid is fixed by
+1024 the fused path becomes *slower than eager* (0.74×). Both configurations sit
+in the same branch, so the 384 and 1024 thresholds themselves remain untested on
+CDNA. The grid is fixed by
 the window geometry, so threads past `C` have nothing to do; swin-tiny's `C` is
 96 at stage 1, and a 1024-wide block leaves 928 lanes idle.
 
 The one substantive difference between the two platforms is the launch stream.
 Upstream passes `0`, the null stream; this version passes
-`at::cuda::getCurrentCUDAStream()`, which hipify rewrites to the current HIP
-stream. `hipify_check.py` verifies that, prints the full symbol mapping, and
-fails if anything is left untranslated.
+`at::cuda::getCurrentCUDAStream()`. Some hipify versions rewrite that to the HIP
+spelling and some leave it, which resolves to the HIP runtime anyway — both
+reach the current stream, and the behaviour does not follow the version order.
+`hipify_check.py` reports which one happened rather than requiring either, prints
+the full symbol mapping, and fails if anything is left untranslated.

@@ -78,10 +78,18 @@ at::Tensor window_merge_and_roll_backward_cuda(
 
 
 // The kernels derive nH = H / window_h and nW = W / window_w with integer
-// division and index with int arithmetic. Violating any of the assumptions below
-// does not fail: it silently reads the wrong element, or reads out of bounds.
-// All four entry points share the same constraints -- the window layout and the
-// spatial layout hold the same number of elements -- so one check covers them.
+// division and index with int arithmetic. All four entry points share the same
+// constraints -- the window layout and the spatial layout hold the same number
+// of elements -- so one check covers them.
+//
+// The checks below are not all guarding the same failure. Divisibility, numel
+// and the int32 bound catch what used to be a silent wrong read or an
+// out-of-bounds one, with no error raised at any point. The grid bounds catch a
+// launch that used to fail asynchronously somewhere else, leaving the output
+// uninitialised. The shift bound is neither: the formula stays correct for
+// |shift| >= window, which is simply a larger roll. It is here because it is the
+// contract the model already documents (`0 <= shift_size < window_size` in
+// models/swin_transformer.py), made explicit at the boundary.
 static void check_window_args(
     const at::Tensor & tensor,
     const int B,
