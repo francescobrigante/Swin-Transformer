@@ -3,16 +3,19 @@
 # Copyright (c) 2022 Nvidia
 # Licensed under The MIT License [see LICENSE for details]
 # --------------------------------------------------------
-# Fused kernels vs the PyTorch ops they replace, in wall time and peak memory.
-#
-# The eager path materialises the tensor twice -- torch.roll writes a copy, then
-# window_partition permutes and calls .contiguous() for another -- where the
-# fused kernel writes once. The operation is entirely memory bound, so the
-# expected ceiling is roughly 2x.
-#
-#   python benchmark.py                  # forward + backward, all dtypes
-#   python benchmark.py --iters 200 --batch 64
-# --------------------------------------------------------
+
+"""Fused kernels against the PyTorch ops they replace, in time and peak memory.
+
+The eager path materialises the tensor twice -- torch.roll writes a copy, then
+window_partition permutes and calls .contiguous() for another -- where the fused
+kernel writes once. The gain is what that saved traffic is worth on the device,
+which varies enough between vendors to be worth measuring rather than
+predicting: README.md records what these configurations gave on an RTX 3080 and
+on an MI300X.
+
+    python benchmark.py                  # forward + backward, all dtypes
+    python benchmark.py --iters 200 --batch 64
+"""
 
 import argparse
 
@@ -135,11 +138,13 @@ def run(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--iters', type=int, default=100)
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument('--iters', type=int, default=100,
+                        help='timed iterations per configuration')
     parser.add_argument('--batch', type=int, default=None,
                         help='override the batch size of every config')
-    parser.add_argument('--forward-only', action='store_true')
+    parser.add_argument('--forward-only', action='store_true',
+                        help='skip the backward pass')
     args = parser.parse_args()
 
     if not torch.cuda.is_available():

@@ -7,7 +7,9 @@
 # translation can be verified here too.
 #
 # The parity tests against the compiled extension (unit_test.py,
-# test_model_parity.py) need a CUDA device and are not run here.
+# test_model_parity.py) need a CUDA device, so they assert nothing on this
+# runner. They are still executed, to catch the case where they fail to import
+# or error out instead of skipping.
 
 name: window process
 

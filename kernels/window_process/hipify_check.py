@@ -7,14 +7,17 @@
 
 """Check that the CUDA sources translate cleanly to HIP for ROCm.
 
-CUDAExtension hipifies its own sources when torch.version.hip is set, so a ROCm
-build needs no second source tree. What it does need is a way to tell whether
-that translation is complete. torch.utils.hipify is pure Python, so this answers
-it with no AMD GPU -- with no GPU at all -- and runs on a CPU runner in CI.
+AMD GPUs do not compile CUDA. They compile HIP, a nearly identical language, and
+PyTorch gets from one to the other with a source-to-source translator called
+hipify: CUDA names go in, HIP names come out. CUDAExtension runs it on its own
+when torch.version.hip is set, so a ROCm build needs no second copy of these
+sources -- but it gives no signal about whether the translation came out
+complete. This is that signal, and because hipify is pure Python it can be had
+with no AMD GPU (with no GPU at all) on a CPU runner in CI.
 
-Fails on a CUDA-only include that survives translation, and on a kernel launch
-that reaches HIP without an explicit stream. Reports, without failing, the
-symbols HIP keeps verbatim.
+Two things fail the check: a CUDA-only header that survives translation, and a
+kernel launch that reaches HIP without an explicit stream. Everything hipify
+leaves untouched is reported, not failed.
 
     python hipify_check.py            # verify
     python hipify_check.py --diff     # verify, and print the generated HIP
@@ -33,8 +36,10 @@ from torch.utils.hipify import hipify_python
 
 SOURCES = ['swin_window_process.cpp', 'swin_window_process_kernel.cu']
 
-# Includes a HIP build does not provide. If hipify leaves one of these behind,
-# the ROCm compile fails outright, so a survivor here is a failure.
+# CUDA header files, which simply do not exist on an AMD machine. hipify has to
+# rewrite every one of them to its HIP counterpart -- cuda_runtime.h becomes
+# hip/hip_runtime.h, and so on. If one of these names is still there afterwards,
+# the ROCm build stops at "no such file", so finding one is a failure.
 MUST_BE_TRANSLATED = [
     'cuda_runtime.h',
     'cuda_fp16.h',
@@ -42,23 +47,20 @@ MUST_BE_TRANSLATED = [
     'c10/cuda/CUDAException.h',
 ]
 
-# Symbols older hipify rewrites to an at::hip / C10_HIP spelling, and newer
-# hipify (torch >= 2.9) leaves alone because they already reach the HIP runtime
-# through the CUDA-compatibility headers. Both outcomes are correct, so this
-# reports which one happened and never fails on it.
+# PyTorch functions and macros that work on ROCm under either name. Older hipify
+# renamed them to an at::hip / C10_HIP spelling; torch >= 2.9 leaves them alone,
+# because ROCm now ships compatibility headers under which the CUDA spelling
+# already resolves to the HIP runtime. Both are correct, so this only reports
+# which one happened.
 CUDA_COMPAT_SHIMS = [
     'at::cuda::getCurrentCUDAStream',
     'C10_CUDA_KERNEL_LAUNCH_CHECK',
 ]
 
-# Symbols HIP spells and implements exactly as CUDA does. Rewriting one of these
-# would be a bug in the translation, so a rewrite here is a failure.
-# Printed on success. hipify works on symbols, and a symbol is not a signature.
-SYMBOL_LEVEL_CAVEAT = """\
-Symbol level only: a symbol can translate and still not compile, because HIP and
-CUDA do not always give it the same overload set. __ldg is the case in point --
-it has no HIP overload for c10::Half. Only a real build finds that."""
-
+# Names that mean the same thing in both languages: HIP spells blockIdx,
+# __global__ and the rest exactly as CUDA does, so hipify is meant to leave them
+# alone. One coming back renamed would mean the translation went wrong, so that
+# is a failure too.
 KNOWN_PORTABLE = [
     '__global__',
     '__ldg',
@@ -70,6 +72,12 @@ KNOWN_PORTABLE = [
     'AT_DISPATCH_FLOATING_TYPES_AND2',
     'at::ScalarType::BFloat16',
 ]
+
+# Printed on success, because passing this check proves less than it sounds like.
+SYMBOL_LEVEL_CAVEAT = """\
+Symbol level only: a symbol can translate and still not compile, because HIP and
+CUDA do not always give it the same overload set. __ldg is the case in point --
+it has no HIP overload for c10::Half. Only a real build finds that."""
 
 
 def read(path):

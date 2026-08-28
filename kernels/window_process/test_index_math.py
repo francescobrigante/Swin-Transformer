@@ -46,12 +46,10 @@ def _shifts(window_h, window_w):
 
 
 def _make_spatial(B, H, W, C):
-    torch.manual_seed(0)
     return torch.arange(B * H * W * C, dtype=torch.float32).view(B, H, W, C)
 
 
 def _make_windows(B, H, W, C, window_h, window_w):
-    torch.manual_seed(1)
     n = B * (H // window_h) * (W // window_w)
     return torch.arange(n * window_h * window_w * C, dtype=torch.float32).view(
         n, window_h, window_w, C)

@@ -34,9 +34,13 @@ except ImportError:                                  # timm missing, for instanc
     MODEL_AVAILABLE = False
 
 
-# The measured noise floor is one sample, so a gradient that is already
-# irreproducible is allowed a few multiples of it before the test calls it a
-# regression.
+# How far a gradient may move under the fused path before the test calls it a
+# regression, as a multiple of the run-to-run noise measured on the same machine.
+# Only gradients that already fail to reproduce against a second eager run are
+# held to this; every other one must still be bit-exact. The noise floor is a
+# single sample, hence the headroom: on an MI300X it measured 1.9e-9 against a
+# gradient scale of 0.254, so even 8x of it stays seven orders of magnitude below
+# the signal.
 NOISE_HEADROOM = 8
 
 requires_everything = unittest.skipIf(

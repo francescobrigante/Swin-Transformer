@@ -51,7 +51,10 @@ why the call sites pass `-shift_size` forward and `+shift_size` back.
 | size | `B * H * W * C < 2^31` — offsets are computed in `int` |
 | grid | `B * nH * nW <= 65535` and `H <= 65535` — CUDA `grid.z` and `grid.y` |
 
-All of these are enforced by `TORCH_CHECK` before the launch.
+Shape, tiling, shift and size are checked with `TORCH_CHECK` before the launch;
+device and contiguity by `CHECK_INPUT`. The channel-last layout is the shape
+contract itself and is not separately verified. Violating any of them used to
+read the wrong element, or read out of bounds, with no error at all.
 
 Note that `nH != nW` follows from `H != W` alone: with a square window,
 `nH = H / window_size` and `nW = W / window_size`. A non-square window is not
@@ -75,7 +78,8 @@ python test_model_parity.py
 python benchmark.py
 ```
 
-The first two run in CI on every push, on a CPU runner.
+The first two run in CI on every push, on a CPU runner. The GPU ones are
+executed there too, but only to confirm they skip cleanly rather than error.
 
 The kernels perform no arithmetic on the values, only gathers, so parity is
 asserted with `torch.equal` on every dtype including float16 and bfloat16: any
